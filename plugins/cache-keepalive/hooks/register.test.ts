@@ -423,3 +423,34 @@ test('passes through when the flag is off', async ($, on) => {
   await compaction($, 'auto')
   expect(compacted.count).toBe(1)
 })
+
+// Compacts on the first ping, from the given folder, and returns the logged lines naming a restore command
+async function restoreLines($: Engine, on: On, cwd: string) {
+  const { seen, clock } = engine(on, 400_000)
+  mock.store(on)
+  on('session.id', () => ({ value: 's-1' }) as never)
+  on('session.cwd', () => ({ value: cwd }) as never)
+  on('session.compact', () => ({ messages: [{ role: 'user', text: 'summary', toolUses: [] }], tokensBefore: 1_000_000, tokensAfter: 100_000 }) as never)
+  await $.classic.Stop({ background_tasks: [task] } as never)
+  await clock.fire(50)
+  return seen.logs.filter(l => l.includes('--resume-session-at'))
+}
+
+const powershellRestore = (quotedCwd: string) => `keepalive: or in PowerShell: Set-Location -LiteralPath ${quotedCwd} -ErrorAction Stop; `
+  + `$dir = if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { "$HOME/.claude" }; `
+  + `$at = Get-Content "$dir/projects/*/s-1.jsonl" | Where-Object { $_.Contains('"subtype":"compact_boundary"') } | ConvertFrom-Json | `
+  + `Where-Object { [datetimeoffset]$_.timestamp -ge [datetimeoffset]'2026-10-07T12:50:00.000Z' } | `
+  + `Select-Object -First 1 -ExpandProperty logicalParentUuid; `
+  + `claude --resume s-1 --fork-session --resume-session-at $at`
+
+test('logs the restore command for POSIX shells and PowerShell, each quoting an apostrophe its own way', { options: { compactOnCap: true } }, async ($, on) => {
+  const [posix, powershell, ...rest] = await restoreLines($, on, "C:\\work\\it's")
+  expect(rest).toEqual([])
+  expect(posix).toContain(`run: cd 'C:\\work\\it'\\''s' && claude --resume s-1`)
+  expect(powershell).toBe(powershellRestore("'C:\\work\\it''s'"))
+})
+
+test('the PowerShell command doubles curly quotes, which PowerShell also reads as string ends', { options: { compactOnCap: true } }, async ($, on) => {
+  const [, powershell] = await restoreLines($, on, 'C:\\work\\it\u2019s')
+  expect(powershell).toBe(powershellRestore("'C:\\work\\it\u2019\u2019s'"))
+})
