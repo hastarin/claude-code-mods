@@ -59,17 +59,21 @@ function cost(u: { input_tokens: number, output_tokens: number, cache_read_input
 
 async function ping($: Engine) {
   const r = await $.model.fork({ prompt: 'Keep-alive ping. Reply with only: ok' })
-  if (!('usage' in r)) return { ok: false, line: `no ping: ${r.reason}` }
+  if (!('usage' in r)) return { ok: false, paid: 0, line: `no ping: ${r.reason}` }
 
   const u = r.usage
   context = u.cache_read_input_tokens + u.cache_creation_input_tokens + u.input_tokens
   const hit = u.cache_read_input_tokens / Math.max(context, 1)
-  spent += cost(u, readMult(await $.session.model()))
 
   return {
     ok: hit > 0.9,
-    line: `cache read ${u.cache_read_input_tokens}/${context} (${Math.round(hit * 100)}%), spent ${Math.round(spent)} of ${Math.round(budget)} token-equivalents`,
+    paid: cost(u, readMult(await $.session.model())),
+    line: `cache read ${u.cache_read_input_tokens}/${context} (${Math.round(hit * 100)}%)`,
   }
+}
+
+function ledger() {
+  return `spent ${Math.round(spent)} of ${Math.round(budget)} token-equivalents`
 }
 
 // Compacting pays when its own cost plus re-caching the summary is below re-caching the whole context
@@ -112,6 +116,12 @@ async function compact($: Engine) {
   }
 }
 
+async function refusal($: Engine) {
+  const { context: ctx } = await $.session.usage()
+  const why = timer ? `the cache is near expiry (${until(warmUntil)})` : 'no wait is armed, so the cache may be cold'
+  return `Not pinging: ${why}. A miss re-writes the whole context, about ${WRITE_MULT * (ctx.tokens ?? 0)} token-equivalents. Use /keepalive force to ping anyway.`
+}
+
 function arm($: Engine) {
   stop()
   const armedAt = generation
@@ -124,9 +134,10 @@ function arm($: Engine) {
       if (now >= warmUntil - TTL_MARGIN_MS) return $.ui.status('keepalive: expired, stopped')
       if (now - waitStart > maxWaitMs) return $.ui.status('keepalive: max wait reached')
 
-      const { ok, line } = await ping($)
+      const { ok, paid, line } = await ping($)
       if (generation !== armedAt) return
-      $.ui.log(`keepalive: ${line}`, { to: 'debug' })
+      spent += paid
+      $.ui.log(`keepalive: ${line}, ${ledger()}`, { to: 'debug' })
       if (!ok) return $.ui.status('keepalive: missed, stopped')
       warmUntil = now + TTL_MS
       if (spent < budget) {
@@ -155,7 +166,7 @@ export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     stop()
     $.ui.status(undefined)
-    await $.command.register({ name: 'keepalive', description: 'Ping the prompt cache now and report the hit rate' })
+    await $.command.register({ name: 'keepalive', description: 'Ping the prompt cache now and report the hit rate', argumentHint: '[force]' })
     return next(e)
   })
 
@@ -200,10 +211,25 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  on('command.run', { command: 'keepalive' }, async $ => {
-    const { context: ctx } = await $.session.usage()
-    if (!budget) budget = WRITE_MULT * (ctx.tokens ?? 0)
-    const { ok, line } = await ping($)
-    return { text: `${ok ? 'HIT' : 'MISS'}: ${line}` }
+  // Only a hit on an armed wait moves the wait: it pays for the warmth it buys and restarts the timer from now.
+  // A stopped wait's warmUntil is no evidence the cache is warm, so being armed is what counts, not the time alone.
+  on('command.run', { command: 'keepalive' }, async ($, e) => {
+    const now = await $.clock.now()
+    if (e.args.trim() !== 'force' && !(timer && now < warmUntil - TTL_MARGIN_MS)) return { text: await refusal($) }
+
+    const armedAt = timer ? generation : undefined
+    const { ok, paid, line } = await ping($)
+    const text = `${ok ? 'HIT' : 'MISS'}: ${line}`
+    if (generation !== armedAt) return { text: `${text}, not counted against a wait` }
+    if (ok) {
+      spent += paid
+      warmUntil = now + TTL_MS
+      $.ui.status(`keepalive: warm ${until(warmUntil)}`)
+      arm($)
+    } else if (paid) {
+      stop()
+      $.ui.status('keepalive: missed, stopped')
+    }
+    return { text: `${text}, ${ledger()}` }
   })
 }
