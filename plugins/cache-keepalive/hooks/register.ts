@@ -16,11 +16,14 @@ const SUMMARY_RATIO_GUESS = 0.15
 let timer: { cancel(): void } | undefined
 let generation = 0
 let compactOnCap = false
+let maxWaitMs = 0
+let excludedTypes: string[] = []
 let compacting = false
 let spent = 0
 let budget = 0
 let context = 0
 let warmUntil = 0
+let waitStart = 0
 
 // The status names the expiry so a line left on screen past it reads as stale
 function until(ms: number) {
@@ -117,6 +120,7 @@ function arm($: Engine) {
       const now = await $.clock.now()
       if (generation !== armedAt) return
       if (now >= warmUntil) return $.ui.status('keepalive: expired, stopped')
+      if (now - waitStart > maxWaitMs) return $.ui.status('keepalive: max wait reached')
 
       const { ok, line } = await ping($)
       if (generation !== armedAt) return
@@ -143,6 +147,8 @@ function arm($: Engine) {
 
 export const register: Register = (on, options) => {
   compactOnCap = options.compactOnCap === true
+  maxWaitMs = Number(options.maxWaitHours) * 60 * 60_000
+  excludedTypes = String(options.excludeTaskTypes).split(',').map(t => t.trim())
 
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'keepalive', description: 'Ping the prompt cache now and report the hit rate' })
@@ -157,7 +163,8 @@ export const register: Register = (on, options) => {
 
   // Arm only when background work will wake the session later
   on('classic.Stop', async ($, e, next) => {
-    if (e.background_tasks?.length && !compacting) {
+    const tasks = (e.background_tasks ?? []).filter(t => !excludedTypes.includes(t.type))
+    if (tasks.length && !compacting) {
       const { context: ctx, rateLimits } = await $.session.usage()
       if (inOverage(rateLimits)) {
         $.ui.status('keepalive: off in overage')
@@ -165,8 +172,9 @@ export const register: Register = (on, options) => {
       }
       spent = 0
       budget = WRITE_MULT * (ctx.tokens ?? 0)
-      warmUntil = await $.clock.now() + TTL_MS
-      $.ui.status(`keepalive: armed, ${e.background_tasks.length} task(s), warm ${until(warmUntil)}`)
+      waitStart = await $.clock.now()
+      warmUntil = waitStart + TTL_MS
+      $.ui.status(`keepalive: armed, ${tasks.length} task(s), warm ${until(warmUntil)}`)
       arm($)
     }
     return next(e)

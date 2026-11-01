@@ -17,6 +17,9 @@ This mod pings the cache with a one-line fork of the conversation every 50 minut
 - a new turn starts
 - a ping misses the cache
 - the pings have cost as much as one re-write would have
+- `maxWaitHours` (default 6) have passed since arming, so a task that never ends cannot burn the whole budget
+
+The mod does not arm for task types listed in `excludeTaskTypes` (comma-separated, default `monitor`). A monitor can run forever and may never wake the session. A monitor beside any other task still arms.
 
 `/keepalive` pings now and reports the hit rate. The status line shows `armed`, `warm` or `stopped`. `armed` and `warm` end with the time the cache expires if no ping lands, so a line still on screen after that time is stale.
 

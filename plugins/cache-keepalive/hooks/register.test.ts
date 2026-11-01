@@ -3,6 +3,7 @@ import type { On } from 'claude-code'
 
 const MIN = 60_000
 const task = { id: 'b1', type: 'shell', status: 'running', description: 'build' }
+const monitor = { id: 'm1', type: 'monitor', status: 'running', description: 'watch logs' }
 
 // Stands in for the engine: a 1M-token context, cache hits on every fork, records statuses and forks.
 // The timer fires only on `fire(at)`, so a test sets the wall time it fires at, as a machine that slept would.
@@ -52,4 +53,47 @@ test('compacting on cap logs a command that restores the pre-compaction conversa
   expect(restore).toContain(`cd '/work/it'\\''s' && claude --resume s-1 --fork-session --resume-session-at "$(jq -r`)
   expect(restore).toContain('.timestamp >= "2026-10-07T12:50:00.000Z"')
   expect(restore).toContain('/projects/*/s-1.jsonl | head -1)"')
+})
+
+test('a never-ending task stops at the max wait', async ($, on) => {
+  const { seen, clock } = engine(on)
+  await $.classic.Stop({ background_tasks: [task] } as never)
+  for (let i = 0; i < 7; i++) await clock.fire(50)
+  expect(seen.forks).toBe(7)
+  await clock.fire(50)
+  expect(seen.forks).toBe(7)
+  expect(seen.statuses.at(-1)).toBe('keepalive: max wait reached')
+})
+
+test('maxWaitHours sets the cap', { options: { maxWaitHours: 1 } }, async ($, on) => {
+  const { seen, clock } = engine(on)
+  await $.classic.Stop({ background_tasks: [task] } as never)
+  await clock.fire(50)
+  await clock.fire(50)
+  expect(seen.forks).toBe(1)
+  expect(seen.statuses.at(-1)).toBe('keepalive: max wait reached')
+})
+
+test('a monitor alone does not arm', async ($, on) => {
+  const { seen, clock } = engine(on)
+  await $.classic.Stop({ background_tasks: [monitor] } as never)
+  await clock.fire(50)
+  expect(seen.forks).toBe(0)
+  expect(seen.statuses).toEqual([])
+})
+
+test('a monitor beside a shell task arms and counts only the shell', async ($, on) => {
+  const { seen, clock } = engine(on)
+  await $.classic.Stop({ background_tasks: [monitor, task] } as never)
+  expect(seen.statuses.at(-1)).toContain('armed, 1 task(s)')
+  await clock.fire(50)
+  expect(seen.forks).toBe(1)
+})
+
+test('excludeTaskTypes takes a spaced list and replaces the default', { options: { excludeTaskTypes: ' shell , workflow ' } }, async ($, on) => {
+  const { seen } = engine(on)
+  await $.classic.Stop({ background_tasks: [task] } as never)
+  expect(seen.statuses).toEqual([])
+  await $.classic.Stop({ background_tasks: [monitor] } as never)
+  expect(seen.statuses.at(-1)).toContain('armed, 1 task(s)')
 })
