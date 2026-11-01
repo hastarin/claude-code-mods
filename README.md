@@ -28,6 +28,12 @@ The mod does not arm for task types listed in `excludeTaskTypes` (comma-separate
 
 A wake-up scheduled further ahead than `maxWaitHours` still arms the mod, which pings until that cap and then stops, so the cache goes cold before the wake-up. The mod assumes the 1h cache TTL. It cannot read the TTL, so it infers the 5m TTL from overage, which switches a session to it. It does not arm while the 5-hour or 7-day rate-limit window is at 100% or more, and it stops if one crosses 100% during the wait. Mods cannot see model-scoped limits such as Fable's weekly one, so the mod ignores them. When such a limit runs out, the first ping misses and the mod stops. Rate-limit readings arrive with this session's own responses, so the mod may not see overage that other sessions cause during a wait. When a 5m TTL slips past the check, the first ping misses, pays for a full re-cache itself and saves nothing, and the mod stops.
 
+### Veto idle compaction
+
+The built-in idle compaction can replace the context that the pings are keeping warm. The `vetoIdleCompaction` setting (off by default) vetoes it during a wait, with a line in the transcript saying so.
+
+This is a heuristic. Idle compaction reaches mods as `auto`, the same trigger as context-full compaction, so the mod cannot identify it and judges by circumstance. It vetoes only when a wait is armed, no main-loop turn is in progress, the compaction is the main conversation's, and the context is known to be under 80% full. Everything else goes ahead, because a wrong veto mid-turn would end in a prompt-too-long error. A context-full compaction that meets all of those conditions, such as one for a prompt submitted while the context is under 80%, would still be vetoed.
+
 ### Compact on cap
 
 The `compactOnCap` setting (off by default) compacts the conversation when the ping budget runs out, while the cache is still warm. It compacts only when the compaction's cost plus re-caching the summary is less than re-caching the whole context. The mod records the cost and summary size of each compaction it runs and uses them for the next decision. Compaction loses context detail, which is why it is off by default.

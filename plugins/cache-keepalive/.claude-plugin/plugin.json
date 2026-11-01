@@ -23,6 +23,12 @@
       "title": "Task types not worth waiting for",
       "description": "Comma-separated background task types, such as monitor,shell. A Stop with only these does not arm.",
       "default": "monitor"
+    },
+    "vetoIdleCompaction": {
+      "type": "boolean",
+      "title": "Veto idle compaction during a wait",
+      "description": "Keeps the full context while background work is pending. Heuristic: see the README.",
+      "default": false
     }
   }
 }
