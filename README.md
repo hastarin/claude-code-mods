@@ -22,7 +22,7 @@ This mod pings the cache with a one-line fork of the conversation every 50 minut
 
 The mod does not arm for task types listed in `excludeTaskTypes` (comma-separated, default `monitor`). A monitor can run forever and may never wake the session. A monitor beside any other task still arms.
 
-`/keepalive` pings now and reports the hit rate. It refuses when no wait is armed or the cache is within 3 minutes of expiry, because a miss there re-writes the whole context. `/keepalive force` pings anyway. A manual ping counts against a wait's budget only when it hits and extends that wait. The status line shows `armed`, `warm` or `stopped`. `armed` and `warm` end with the time the cache expires if no ping lands, so a line still on screen after that time is stale.
+`/keepalive` pings now and reports the hit rate. It refuses when no wait is armed or the cache is within 3 minutes of expiry, because a miss there re-writes the whole context. `/keepalive force` pings anyway. A manual ping counts against a wait's budget only when it hits and extends that wait. The status line shows `armed`, `warm`, `stopped` or `max wait reached`. `armed` and `warm` end with the time the cache expires if no ping lands, so a line still on screen after that time is stale. A ping due within 3 minutes of that time is skipped and the status reads `expired, stopped`, because latency could land it after expiry.
 
 ### Limitations
 
