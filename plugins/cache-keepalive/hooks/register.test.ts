@@ -251,3 +251,33 @@ test('a /keepalive that gets no answer leaves the wait running and unspent', asy
   expect(seen.forks).toBe(2)
   expect(seen.logs.at(-1)).toContain('spent 50015 of 2000000')
 })
+
+const cron = { id: 'c1', schedule: '*/30 * * * *', recurring: true, prompt: 'check the build' }
+
+test('a scheduled wake-up alone arms', async ($, on) => {
+  const { seen, clock } = engine(on)
+  await $.classic.Stop({ background_tasks: [], session_crons: [cron] } as never)
+  expect(seen.statuses.at(-1)).toContain('armed, 1 wake-up(s), warm until')
+  await clock.fire(50)
+  expect(seen.forks).toBe(1)
+})
+
+test('a wake-up with no task list at all arms', async ($, on) => {
+  const { seen } = engine(on)
+  await $.classic.Stop({ session_crons: [cron] } as never)
+  expect(seen.statuses.at(-1)).toContain('armed, 1 wake-up(s)')
+})
+
+test('a wake-up beside an excluded monitor arms and the status counts both kinds of work', async ($, on) => {
+  const { seen } = engine(on)
+  await $.classic.Stop({ background_tasks: [monitor], session_crons: [cron] } as never)
+  expect(seen.statuses.at(-1)).toContain('armed, 1 wake-up(s)')
+  await $.classic.Stop({ background_tasks: [task], session_crons: [cron, cron] } as never)
+  expect(seen.statuses.at(-1)).toContain('armed, 1 task(s), 2 wake-up(s), warm until')
+})
+
+test('a Stop with neither tasks nor wake-ups does not arm', async ($, on) => {
+  const { seen } = engine(on)
+  await $.classic.Stop({ background_tasks: [], session_crons: [] } as never)
+  expect(seen.statuses).toEqual([])
+})

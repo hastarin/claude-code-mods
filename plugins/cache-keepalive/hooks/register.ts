@@ -186,7 +186,8 @@ export const register: Register = (on, options) => {
   // Arm only when background work will wake the session later
   on('classic.Stop', async ($, e, next) => {
     const tasks = (e.background_tasks ?? []).filter(t => !excludedTypes.includes(t.type))
-    if (tasks.length && !compacting) {
+    const crons = e.session_crons?.length ?? 0
+    if ((tasks.length || crons) && !compacting) {
       const { context: ctx, rateLimits } = await $.session.usage()
       if (inOverage(rateLimits)) {
         $.ui.status('keepalive: off in overage')
@@ -196,7 +197,8 @@ export const register: Register = (on, options) => {
       budget = WRITE_MULT * (ctx.tokens ?? 0)
       waitStart = await $.clock.now()
       warmUntil = waitStart + TTL_MS
-      $.ui.status(`keepalive: armed, ${tasks.length} task(s), warm ${until(warmUntil)}`)
+      const work = [tasks.length && `${tasks.length} task(s)`, crons && `${crons} wake-up(s)`].filter(Boolean).join(', ')
+      $.ui.status(`keepalive: armed, ${work}, warm ${until(warmUntil)}`)
       arm($)
     }
     return next(e)
