@@ -3,9 +3,9 @@
 Claude Code mods, published as a plugin marketplace.
 
 ```
-/plugin marketplace add RichardJSun/claude-code-mods
-/plugin install cache-keepalive@richardjsun-mods
-/plugin install model-select@richardjsun-mods
+/plugin marketplace add hastarin/claude-code-mods
+/plugin install cache-keepalive@hastarin-mods
+/plugin install model-select@hastarin-mods
 ```
 
 ## cache-keepalive
