@@ -19,6 +19,8 @@ function engine(on: On, forkOutput = 1) {
     async fire(minutes: number) { now += minutes * MIN; resolve(); for (let i = 0; i < 1000; i++) await Promise.resolve() },
   }
   on('classic.Stop', () => ({}) as never)
+  on('turn.start', (_, e) => ({ turnId: e.turnId }) as never)
+  on('turn.complete', () => ({ text: '' }) as never)
   on('session.usage', () => ({ value: { context: { tokens: 1_000_000, window: 1_000_000, percent: 100 }, rateLimits: [] } }) as never)
   on('session.model', () => ({ value: 'claude-opus-5-5' }) as never)
   on('model.fork', async () => {
@@ -280,4 +282,22 @@ test('a Stop with neither tasks nor wake-ups does not arm', async ($, on) => {
   const { seen } = engine(on)
   await $.classic.Stop({ background_tasks: [], session_crons: [] } as never)
   expect(seen.statuses).toEqual([])
+})
+
+test('a subagent turn neither cancels the wait nor clears the status', async ($, on) => {
+  const { seen, clock } = engine(on)
+  await $.classic.Stop({ background_tasks: [task] } as never)
+  const armed = seen.statuses.at(-1)
+  await $.turn.start({ text: '', turnId: 't-1', agentId: 'a-1' } as never)
+  expect(seen.statuses.at(-1)).toBe(armed)
+  await clock.fire(50)
+  expect(seen.forks).toBe(1)
+})
+
+test('a main-loop turn cancels the wait', async ($, on) => {
+  const { seen, clock } = engine(on)
+  await $.classic.Stop({ background_tasks: [task] } as never)
+  await $.turn.start({ text: 'hi', turnId: 't-1' } as never)
+  await clock.fire(50)
+  expect(seen.forks).toBe(0)
 })

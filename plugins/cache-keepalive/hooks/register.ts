@@ -178,6 +178,7 @@ export const register: Register = (on, options) => {
   })
 
   on('turn.start', async ($, e, next) => {
+    if (e.agentId !== undefined) return next(e)
     stop()
     if (!compacting) $.ui.status(undefined)
     return next(e)
