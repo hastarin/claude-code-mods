@@ -133,3 +133,25 @@ test('a ping in flight when the session ends does not rearm or report', async ($
   await clock.fire(50)
   expect(seen.statuses.at(-1)).toBe(undefined)
 })
+
+test('a timer inside the TTL margin does not ping and says expired', async ($, on) => {
+  const { seen, clock } = engine(on)
+  await $.classic.Stop({ background_tasks: [task] } as never)
+  await clock.fire(57)
+  expect(seen.forks).toBe(0)
+  expect(seen.statuses.at(-1)).toBe('keepalive: expired, stopped')
+})
+
+test('a timer just outside the TTL margin still pings', async ($, on) => {
+  const { seen, clock } = engine(on)
+  await $.classic.Stop({ background_tasks: [task] } as never)
+  await clock.fire(56)
+  expect(seen.forks).toBe(1)
+})
+
+test('a timer on schedule pings', async ($, on) => {
+  const { seen, clock } = engine(on)
+  await $.classic.Stop({ background_tasks: [task] } as never)
+  await clock.fire(50)
+  expect(seen.forks).toBe(1)
+})

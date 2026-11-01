@@ -6,6 +6,8 @@ type Engine = Parameters<Hook<'turn.start'>>[0]
 // rate-limit window is at 100%. A 5m TTL it fails to infer makes the first ping miss and stop the pings.
 const PING_EVERY_MS = 50 * 60_000
 const TTL_MS = 60 * 60_000
+// A ping fired this close to expiry can land after it, once latency counts, and pay a full re-write
+const TTL_MARGIN_MS = 3 * 60_000
 const WRITE_MULT = 2
 const OUTPUT_MULT = 5
 
@@ -119,7 +121,7 @@ function arm($: Engine) {
       // A timer that fires late (the machine slept) finds the cache gone, and a ping would only re-write it
       const now = await $.clock.now()
       if (generation !== armedAt) return
-      if (now >= warmUntil) return $.ui.status('keepalive: expired, stopped')
+      if (now >= warmUntil - TTL_MARGIN_MS) return $.ui.status('keepalive: expired, stopped')
       if (now - waitStart > maxWaitMs) return $.ui.status('keepalive: max wait reached')
 
       const { ok, line } = await ping($)
