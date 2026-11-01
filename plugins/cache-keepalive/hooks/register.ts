@@ -151,7 +151,16 @@ export const register: Register = (on, options) => {
   excludedTypes = String(options.excludeTaskTypes).split(',').map(t => t.trim())
 
   on('session.start', async ($, e, next) => {
+    stop()
+    $.ui.status(undefined)
     await $.command.register({ name: 'keepalive', description: 'Ping the prompt cache now and report the hit rate' })
+    return next(e)
+  })
+
+  // A /clear or /resume keeps the process, so a pending ping would fork into the next session
+  on('session.end', async ($, e, next) => {
+    stop()
+    $.ui.status(undefined)
     return next(e)
   })
 

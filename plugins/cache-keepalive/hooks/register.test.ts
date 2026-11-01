@@ -8,7 +8,7 @@ const monitor = { id: 'm1', type: 'monitor', status: 'running', description: 'wa
 // Stands in for the engine: a 1M-token context, cache hits on every fork, records statuses and forks.
 // The timer fires only on `fire(at)`, so a test sets the wall time it fires at, as a machine that slept would.
 function engine(on: On, forkOutput = 1) {
-  const seen = { statuses: [] as (string | undefined)[], forks: 0, logs: [] as string[] }
+  const seen = { statuses: [] as (string | undefined)[], forks: 0, logs: [] as string[], duringFork: async () => {} }
   let now = Date.UTC(2026, 9, 7, 12)
   let resolve = () => {}
   on('clock.now', () => ({ value: now }) as never)
@@ -17,7 +17,11 @@ function engine(on: On, forkOutput = 1) {
   on('classic.Stop', () => ({}) as never)
   on('session.usage', () => ({ value: { context: { tokens: 1_000_000, window: 1_000_000, percent: 100 }, rateLimits: [] } }) as never)
   on('session.model', () => ({ value: 'claude-opus-5-5' }) as never)
-  on('model.fork', () => (seen.forks++, { value: { isAnswered: true, text: 'ok', usage: { input_tokens: 10, output_tokens: forkOutput, cache_read_input_tokens: 1_000_000, cache_creation_input_tokens: 0 } } }) as never)
+  on('model.fork', async () => {
+    seen.forks++
+    await seen.duringFork()
+    return { value: { isAnswered: true, text: 'ok', usage: { input_tokens: 10, output_tokens: forkOutput, cache_read_input_tokens: 1_000_000, cache_creation_input_tokens: 0 } } } as never
+  })
   on('ui.status', (_, e) => (seen.statuses.push(e.text), { value: undefined }) as never)
   on('ui.log', (_, e) => (seen.logs.push(e.text), { value: undefined }) as never)
   return { seen, clock }
@@ -96,4 +100,36 @@ test('excludeTaskTypes takes a spaced list and replaces the default', { options:
   expect(seen.statuses).toEqual([])
   await $.classic.Stop({ background_tasks: [monitor] } as never)
   expect(seen.statuses.at(-1)).toContain('armed, 1 task(s)')
+})
+
+test('no ping fires after the session ends', async ($, on) => {
+  const { seen, clock } = engine(on)
+  on('session.end', () => ({ sessionId: 's-1' }) as never)
+  await $.classic.Stop({ background_tasks: [task] } as never)
+  await $.session.end({ reason: 'clear', sessionId: 's-1' } as never)
+  await clock.fire(50)
+  expect(seen.forks).toBe(0)
+  expect(seen.statuses.at(-1)).toBe(undefined)
+})
+
+test('no ping fires into a new session', async ($, on) => {
+  const { seen, clock } = engine(on)
+  on('session.start', () => ({ cwd: '/work' }) as never)
+  on('command.register', () => ({ value: { command: 'keepalive' } }) as never)
+  await $.classic.Stop({ background_tasks: [task] } as never)
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+  await clock.fire(50)
+  expect(seen.forks).toBe(0)
+  expect(seen.statuses.at(-1)).toBe(undefined)
+})
+
+test('a ping in flight when the session ends does not rearm or report', async ($, on) => {
+  const { seen, clock } = engine(on)
+  on('session.end', () => ({ sessionId: 's-1' }) as never)
+  seen.duringFork = async () => { await $.session.end({ reason: 'clear', sessionId: 's-1' } as never) }
+  await $.classic.Stop({ background_tasks: [task] } as never)
+  await clock.fire(50)
+  expect(seen.statuses.at(-1)).toBe(undefined)
+  await clock.fire(50)
+  expect(seen.statuses.at(-1)).toBe(undefined)
 })

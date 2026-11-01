@@ -15,6 +15,7 @@ When Claude ends a turn while background tasks are still running, the prompt cac
 This mod pings the cache with a one-line fork of the conversation every 50 minutes while the session waits. A cache read costs 0.025–0.1× input, so a ping costs a few percent of a re-write. Pings stop when:
 
 - a new turn starts
+- the session ends, or `/clear` or `/resume` replaces it
 - a ping misses the cache
 - the pings have cost as much as one re-write would have
 - `maxWaitHours` (default 6) have passed since arming, so a task that never ends cannot burn the whole budget
