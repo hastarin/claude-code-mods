@@ -222,10 +222,11 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  // Idle compaction arrives as `auto`, the trigger context-full compaction uses, so this tells them apart by
-  // circumstance. A wrong veto mid-turn would end in prompt too long, so anything but the idle case goes ahead,
-  // a subagent's own transcript included: the fill read here is the main conversation's, not its.
-  on('session.compact', { trigger: 'auto' }, async ($, e, next) => {
+  // Idle compaction builds its summary in the background as `precompute`, and the next prompt installs it as `auto`
+  // once the turn has begun, too late to veto. Both triggers also serve context-full compaction, so this tells them
+  // apart by circumstance. A wrong veto mid-turn would end in prompt too long, so anything but the idle case goes
+  // ahead, a subagent's own transcript included: the fill read here is the main conversation's, not its.
+  on('session.compact', { trigger: ['auto', 'precompute'] }, async ($, e, next) => {
     if (!vetoIdle || e.agentId !== undefined || !timer || inTurn) return next(e)
     const { context: ctx } = await $.session.usage()
     if ((ctx.percent ?? 100) >= VETO_BELOW_PERCENT) return next(e)

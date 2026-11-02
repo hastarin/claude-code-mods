@@ -319,11 +319,27 @@ test('passes through when the context fill is unknown', vetoOn, async ($, on) =>
   expect(compacted.count).toBe(1)
 })
 
-test('passes through manual, plugin and precompute compactions', vetoOn, async ($, on) => {
+test('passes through manual and plugin compactions', vetoOn, async ($, on) => {
   const { compacted } = idle(on)
   await $.classic.Stop({ background_tasks: [task] } as never)
-  for (const trigger of ['manual', 'plugin', 'precompute']) await compaction($, trigger)
-  expect(compacted.count).toBe(3)
+  for (const trigger of ['manual', 'plugin']) await compaction($, trigger)
+  expect(compacted.count).toBe(2)
+})
+
+// Idle compaction builds its summary as `precompute` and installs it as `auto` at the next prompt, mid-turn
+test('vetoes the background summary idle compaction builds', vetoOn, async ($, on) => {
+  const { compacted } = idle(on)
+  await $.classic.Stop({ background_tasks: [task] } as never)
+  expect((await compaction($, 'precompute')).skip).toBe(VETO)
+  expect(compacted.count).toBe(0)
+})
+
+test('passes through a background summary built mid-turn', vetoOn, async ($, on) => {
+  const { compacted } = idle(on)
+  await $.turn.start({ text: 'go', turnId: 't-1' } as never)
+  await $.classic.Stop({ background_tasks: [task] } as never)
+  await compaction($, 'precompute')
+  expect(compacted.count).toBe(1)
 })
 
 test('passes through when no wait is armed', vetoOn, async ($, on) => {

@@ -27,9 +27,9 @@ A task or wake-up further ahead than the budget lasts (about 17 hours, or 33 on 
 
 ### Veto idle compaction
 
-The built-in idle compaction can replace the context that the pings are keeping warm. The `vetoIdleCompaction` setting (off by default) vetoes it during a wait, with a line in the transcript saying so.
+The built-in idle compaction can replace the context that the pings are keeping warm. About 54 minutes after the last main-thread request it summarizes a context of at least 200k tokens in the background, and the next prompt installs that summary, however warm the cache is. The `vetoIdleCompaction` setting (off by default) vetoes it during a wait. The veto shows only in the debug log, as `precomputed compact: skipped`.
 
-This is a heuristic. Idle compaction reaches mods as `auto`, the same trigger as context-full compaction, so the mod cannot identify it and judges by circumstance. It vetoes only when a wait is armed, no main-loop turn is in progress, the compaction is the main conversation's, and the context is known to be under 80% full. Everything else goes ahead, because a wrong veto mid-turn would end in a prompt-too-long error. A context-full compaction that meets all of those conditions, such as one for a prompt submitted while the context is under 80%, would still be vetoed.
+This is a heuristic. Idle compaction reaches mods as `precompute` and `auto`, the same triggers as context-full compaction, so the mod cannot identify it and judges by circumstance. It vetoes only when a wait is armed, no main-loop turn is in progress, the compaction is the main conversation's, and the context is known to be under 80% full. Everything else goes ahead, because a wrong veto mid-turn would end in a prompt-too-long error. A context-full compaction that meets all of those conditions, such as one for a prompt submitted while the context is under 80%, would still be vetoed.
 
 ### Compact on cap
 
