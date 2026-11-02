@@ -19,7 +19,7 @@ This mod pings the cache with a one-line fork of the conversation every 50 minut
 - a ping misses the cache
 - the pings have cost as much as one re-write would have
 
-`/keepalive` pings now and reports the hit rate. The status line shows `armed`, `warm` or `stopped`. `armed` and `warm` end with the time the cache expires if no ping lands, so a line still on screen after that time is stale.
+`/keepalive` pings now and reports the hit rate. It refuses when no wait is armed or the cache has expired, because a miss there re-writes the whole context. `/keepalive force` pings anyway. A manual ping leaves any wait as it is. The status line shows `armed`, `warm` or `stopped`. `armed` and `warm` end with the time the cache expires if no ping lands, so a line still on screen after that time is stale.
 
 ### Limitations
 

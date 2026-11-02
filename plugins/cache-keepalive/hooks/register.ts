@@ -54,17 +54,21 @@ function cost(u: { input_tokens: number, output_tokens: number, cache_read_input
 
 async function ping($: Engine) {
   const r = await $.model.fork({ prompt: 'Keep-alive ping. Reply with only: ok' })
-  if (!('usage' in r)) return { ok: false, line: `no ping: ${r.reason}` }
+  if (!('usage' in r)) return { ok: false, paid: 0, line: `no ping: ${r.reason}` }
 
   const u = r.usage
   context = u.cache_read_input_tokens + u.cache_creation_input_tokens + u.input_tokens
   const hit = u.cache_read_input_tokens / Math.max(context, 1)
-  spent += cost(u, readMult(await $.session.model()))
 
   return {
     ok: hit > 0.9,
-    line: `cache read ${u.cache_read_input_tokens}/${context} (${Math.round(hit * 100)}%), spent ${Math.round(spent)} of ${Math.round(budget)} token-equivalents`,
+    paid: cost(u, readMult(await $.session.model())),
+    line: `cache read ${u.cache_read_input_tokens}/${context} (${Math.round(hit * 100)}%)`,
   }
+}
+
+function ledger() {
+  return `spent ${Math.round(spent)} of ${Math.round(budget)} token-equivalents`
 }
 
 // Compacting pays when its own cost plus re-caching the summary is below re-caching the whole context
@@ -107,6 +111,12 @@ async function compact($: Engine) {
   }
 }
 
+async function refusal($: Engine) {
+  const { context: ctx } = await $.session.usage()
+  const why = timer ? 'the cache has expired' : 'no wait is armed, so the cache may be cold'
+  return `Not pinging: ${why}. A miss re-writes the whole context, about ${WRITE_MULT * (ctx.tokens ?? 0)} token-equivalents. Use /keepalive force to ping anyway.`
+}
+
 function arm($: Engine) {
   stop()
   const armedAt = generation
@@ -118,9 +128,10 @@ function arm($: Engine) {
       if (generation !== armedAt) return
       if (now >= warmUntil) return $.ui.status('keepalive: expired, stopped')
 
-      const { ok, line } = await ping($)
+      const { ok, paid, line } = await ping($)
       if (generation !== armedAt) return
-      $.ui.log(`keepalive: ${line}`, { to: 'debug' })
+      spent += paid
+      $.ui.log(`keepalive: ${line}, ${ledger()}`, { to: 'debug' })
       if (!ok) return $.ui.status('keepalive: missed, stopped')
       warmUntil = now + TTL_MS
       if (spent < budget) {
@@ -145,7 +156,7 @@ export const register: Register = (on, options) => {
   compactOnCap = options.compactOnCap === true
 
   on('session.start', async ($, e, next) => {
-    await $.command.register({ name: 'keepalive', description: 'Ping the prompt cache now and report the hit rate' })
+    await $.command.register({ name: 'keepalive', description: 'Ping the prompt cache now and report the hit rate', argumentHint: '[force]' })
     return next(e)
   })
 
@@ -188,9 +199,10 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  on('command.run', { command: 'keepalive' }, async $ => {
-    const { context: ctx } = await $.session.usage()
-    if (!budget) budget = WRITE_MULT * (ctx.tokens ?? 0)
+  // A stopped wait's warmUntil is no evidence the cache is warm, so being armed is what counts, not the time alone.
+  // A manual ping leaves the wait alone: its timer already fires inside the TTL.
+  on('command.run', { command: 'keepalive' }, async ($, e) => {
+    if (e.args.trim() !== 'force' && !(timer && await $.clock.now() < warmUntil)) return { text: await refusal($) }
     const { ok, line } = await ping($)
     return { text: `${ok ? 'HIT' : 'MISS'}: ${line}` }
   })
