@@ -31,7 +31,7 @@ The `compactOnCap` setting (off by default) compacts the conversation when the p
 
 A background notification that arrives during compaction waits until compaction finishes, then starts its turn as usual.
 
-Compaction keeps the earlier messages in the session file. After each compaction it runs, the mod adds a line to the transcript with a command that opens the conversation as it was before that compaction, as a new session. The compacted session does not change. The command needs `jq` and uses `--resume-session-at`, a CLI flag that `claude --help` does not show. `/rewind` cannot go back past a compaction after the session is resumed.
+Compaction keeps the earlier messages in the session file. After each compaction it runs, the mod adds two lines to the transcript, each with a command that opens the conversation as it was before that compaction, as a new session. Mods cannot read the platform, so one line is for POSIX shells and needs `jq`, and the other is for PowerShell. The compacted session does not change. Both use `--resume-session-at`, a CLI flag that `claude --help` does not show. `/rewind` cannot go back past a compaction after the session is resumed.
 
 ## model-select
 

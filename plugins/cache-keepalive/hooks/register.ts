@@ -81,12 +81,24 @@ async function compactPays($: Engine) {
 // Compaction only appends to the transcript, and its boundary row names the last message before it.
 // The mod API exposes no message UUIDs, so the command reads that row, picked by when this compaction began.
 // --resume-session-at is a hidden CLI flag; --fork-session leaves the compacted session as it is.
-async function restoreCommand($: Engine, startedAt: string) {
-  const id = await $.session.id()
+function posixRestore(cwd: string, id: string, startedAt: string) {
   const quote = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`
   const at = `jq -r 'select(.subtype == "compact_boundary" and .timestamp >= "${startedAt}") | .logicalParentUuid' `
     + `"\${CLAUDE_CONFIG_DIR:-$HOME/.claude}"/projects/*/${id}.jsonl | head -1`
-  return `cd ${quote(await $.session.cwd())} && claude --resume ${id} --fork-session --resume-session-at "$(${at})"`
+  return `cd ${quote(cwd)} && claude --resume ${id} --fork-session --resume-session-at "$(${at})"`
+}
+
+// Reads in PowerShell 7 and Windows PowerShell 5.1, which has no && or ??. Only boundary rows reach ConvertFrom-Json
+// because it refuses the case-colliding keys tool inputs can hold. It parses dates in 7 and not in 5.1, and
+// [datetimeoffset] compares either as an instant. PowerShell reads curly quotes as string ends too.
+function powershellRestore(cwd: string, id: string, startedAt: string) {
+  const quote = (s: string) => `'${s.replace(/['\u2018\u2019\u201a\u201b]/g, '$&$&')}'`
+  return `Set-Location -LiteralPath ${quote(cwd)} -ErrorAction Stop; `
+    + `$dir = if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { "$HOME/.claude" }; `
+    + `$at = Get-Content "$dir/projects/*/${id}.jsonl" | Where-Object { $_.Contains('"subtype":"compact_boundary"') } | ConvertFrom-Json | `
+    + `Where-Object { [datetimeoffset]$_.timestamp -ge [datetimeoffset]'${startedAt}' } | `
+    + `Select-Object -First 1 -ExpandProperty logicalParentUuid; `
+    + `claude --resume ${id} --fork-session --resume-session-at $at`
 }
 
 async function compact($: Engine) {
@@ -95,7 +107,10 @@ async function compact($: Engine) {
     const startedAt = new Date(await $.clock.now()).toISOString()
     const r = await $.session.compact({ instructions: 'Also keep the background tasks\' IDs, output paths, and what to do when they finish, and what each scheduled wake-up is for.' })
     if (r.skip !== undefined) return `compaction skipped: ${r.skip}`
-    $.ui.log(`keepalive: compacted. To reopen the conversation as it was before, in a new session, run: ${await restoreCommand($, startedAt)}`)
+    // The mod API names no platform, so both commands go out
+    const [cwd, id] = [await $.session.cwd(), await $.session.id()]
+    $.ui.log(`keepalive: compacted. To reopen the conversation as it was before, in a new session, run: ${posixRestore(cwd, id, startedAt)}`)
+    $.ui.log(`keepalive: or in PowerShell: ${powershellRestore(cwd, id, startedAt)}`)
 
     const before = r.tokensBefore ?? context
     if (r.usage && before) {
