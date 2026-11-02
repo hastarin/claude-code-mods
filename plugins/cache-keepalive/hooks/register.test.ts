@@ -8,7 +8,7 @@ const task = { id: 'b1', type: 'shell', status: 'running', description: 'build' 
 // Stands in for the engine: a 1M-token context, cache hits on every fork, records statuses and forks.
 // The timer fires only on `fire(at)`, so a test sets the wall time it fires at, as a machine that slept would.
 function engine(on: On, forkOutput = 1) {
-  const seen = { statuses: [] as (string | undefined)[], forks: 0, logs: [] as string[], duringFork: async () => {}, isHit: true, noAnswer: false }
+  const seen = { statuses: [] as (string | undefined)[], forks: 0, logs: [] as string[], duringFork: async () => {}, isHit: true, noAnswer: false, percent: 100 as number | undefined }
   let now = Date.UTC(2026, 9, 7, 12)
   let resolve = () => {}
   on('clock.now', () => ({ value: now }) as never)
@@ -19,7 +19,8 @@ function engine(on: On, forkOutput = 1) {
   }
   on('classic.Stop', () => ({}) as never)
   on('turn.start', (_, e) => ({ turnId: e.turnId }) as never)
-  on('session.usage', () => ({ value: { context: { tokens: 1_000_000, window: 1_000_000, percent: 100 }, rateLimits: [] } }) as never)
+  on('turn.complete', () => ({ text: '' }) as never)
+  on('session.usage', () => ({ value: { context: { tokens: 1_000_000, window: 1_000_000, percent: seen.percent }, rateLimits: [] } }) as never)
   on('session.model', () => ({ value: 'claude-opus-5-5' }) as never)
   on('model.fork', async () => {
     seen.forks++
@@ -219,6 +220,144 @@ test('a main-loop turn cancels the wait', async ($, on) => {
   await $.turn.start({ text: 'hi', turnId: 't-1' } as never)
   await clock.fire(50)
   expect(seen.forks).toBe(0)
+})
+
+const VETO = 'keepalive: background work pending, keeping full context'
+const vetoOn = { options: { vetoIdleCompaction: true } }
+const rows = [{ role: 'user', text: 'hello', toolUses: [] }]
+
+// A session idle over a part-full context; the hook beneath counts the compactions that got through
+function idle(on: On) {
+  const { seen, clock } = engine(on)
+  seen.percent = 50
+  const compacted = { count: 0 }
+  on('session.compact', () => (compacted.count++, { messages: rows }) as never)
+  return { seen, clock, compacted }
+}
+const compaction = ($: Engine, trigger: string, extra = {}) =>
+  $.session.compact({ trigger, messages: rows, ...extra } as never)
+const endTurn = ($: Engine, turnId: string, extra = {}) =>
+  $.turn.complete({ answer: '', durationMs: 1, isAborted: false, reason: 'answer', turnId, ...extra } as never)
+
+test('vetoes idle compaction while armed', vetoOn, async ($, on) => {
+  const { compacted } = idle(on)
+  await $.classic.Stop({ background_tasks: [task] } as never)
+  const r = await compaction($, 'auto')
+  expect(r.skip).toBe(VETO)
+  expect(compacted.count).toBe(0)
+})
+
+test('vetoes idle compaction after the turn that armed has completed', vetoOn, async ($, on) => {
+  const { compacted } = idle(on)
+  await $.turn.start({ text: 'go', turnId: 't-1' } as never)
+  await $.classic.Stop({ background_tasks: [task] } as never)
+  await endTurn($, 't-1')
+  expect((await compaction($, 'auto')).skip).toBe(VETO)
+  expect(compacted.count).toBe(0)
+})
+
+test('passes through auto compaction mid-turn', vetoOn, async ($, on) => {
+  const { compacted } = idle(on)
+  await $.turn.start({ text: 'go', turnId: 't-1' } as never)
+  // Armed and mid-turn at once: a Stop raised before the turn's end, as when a Stop hook keeps the turn going
+  await $.classic.Stop({ background_tasks: [task] } as never)
+  const r = await compaction($, 'auto')
+  expect(r.skip).toBe(undefined)
+  expect(compacted.count).toBe(1)
+})
+
+test('an aborted turn counts as over', vetoOn, async ($, on) => {
+  idle(on)
+  await $.turn.start({ text: 'go', turnId: 't-1' } as never)
+  await $.classic.Stop({ background_tasks: [task] } as never)
+  await endTurn($, 't-1', { isAborted: true, reason: 'aborted' })
+  expect((await compaction($, 'auto')).skip).toBe(VETO)
+})
+
+test('a subagent turn does not count as a turn in progress', vetoOn, async ($, on) => {
+  idle(on)
+  await $.classic.Stop({ background_tasks: [task] } as never)
+  await $.turn.start({ text: '', turnId: 't-1', agentId: 'a-1' } as never)
+  expect((await compaction($, 'auto')).skip).toBe(VETO)
+})
+
+test('a subagent ending its turn does not end the main turn', vetoOn, async ($, on) => {
+  const { compacted } = idle(on)
+  await $.turn.start({ text: 'go', turnId: 't-1' } as never)
+  await $.classic.Stop({ background_tasks: [task] } as never)
+  await endTurn($, 't-2', { agentId: 'a-1' })
+  await compaction($, 'auto')
+  expect(compacted.count).toBe(1)
+})
+
+test('passes through a subagent compacting its own transcript', vetoOn, async ($, on) => {
+  const { compacted } = idle(on)
+  await $.classic.Stop({ background_tasks: [task] } as never)
+  await compaction($, 'auto', { agentId: 'a-1' })
+  expect(compacted.count).toBe(1)
+})
+
+test('passes through at 80% and above', vetoOn, async ($, on) => {
+  const { seen, compacted } = idle(on)
+  await $.classic.Stop({ background_tasks: [task] } as never)
+  seen.percent = 80
+  await compaction($, 'auto')
+  expect(compacted.count).toBe(1)
+  seen.percent = 79
+  expect((await compaction($, 'auto')).skip).toBe(VETO)
+  expect(compacted.count).toBe(1)
+})
+
+test('passes through when the context fill is unknown', vetoOn, async ($, on) => {
+  const { seen, compacted } = idle(on)
+  await $.classic.Stop({ background_tasks: [task] } as never)
+  seen.percent = undefined
+  await compaction($, 'auto')
+  expect(compacted.count).toBe(1)
+})
+
+test('passes through manual and plugin compactions', vetoOn, async ($, on) => {
+  const { compacted } = idle(on)
+  await $.classic.Stop({ background_tasks: [task] } as never)
+  for (const trigger of ['manual', 'plugin']) await compaction($, trigger)
+  expect(compacted.count).toBe(2)
+})
+
+// Idle compaction builds its summary as `precompute` and installs it as `auto` at the next prompt, mid-turn
+test('vetoes the background summary idle compaction builds', vetoOn, async ($, on) => {
+  const { compacted } = idle(on)
+  await $.classic.Stop({ background_tasks: [task] } as never)
+  expect((await compaction($, 'precompute')).skip).toBe(VETO)
+  expect(compacted.count).toBe(0)
+})
+
+test('passes through a background summary built mid-turn', vetoOn, async ($, on) => {
+  const { compacted } = idle(on)
+  await $.turn.start({ text: 'go', turnId: 't-1' } as never)
+  await $.classic.Stop({ background_tasks: [task] } as never)
+  await compaction($, 'precompute')
+  expect(compacted.count).toBe(1)
+})
+
+test('passes through when no wait is armed', vetoOn, async ($, on) => {
+  const { compacted } = idle(on)
+  await compaction($, 'auto')
+  expect(compacted.count).toBe(1)
+})
+
+test('passes through once the wait has ended', vetoOn, async ($, on) => {
+  const { clock, compacted } = idle(on)
+  await $.classic.Stop({ background_tasks: [task] } as never)
+  await clock.fire(60)
+  await compaction($, 'auto')
+  expect(compacted.count).toBe(1)
+})
+
+test('passes through when the flag is off', async ($, on) => {
+  const { compacted } = idle(on)
+  await $.classic.Stop({ background_tasks: [task] } as never)
+  await compaction($, 'auto')
+  expect(compacted.count).toBe(1)
 })
 
 // Compacts on the first ping, from the given folder, and returns the logged lines naming a restore command

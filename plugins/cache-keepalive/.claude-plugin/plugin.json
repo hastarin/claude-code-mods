@@ -1,6 +1,6 @@
 {
   "name": "cache-keepalive",
-  "version": "0.2.5",
+  "version": "0.3.0",
   "description": "Keeps the prompt cache warm while the session waits on background work",
   "author": { "name": "RichardJSun" },
   "repository": "https://github.com/RichardJSun/claude-code-mods",
@@ -10,6 +10,12 @@
       "type": "boolean",
       "title": "Compact when the ping budget runs out",
       "description": "Compacts the conversation while the cache is still warm instead of letting it expire. Loses context detail.",
+      "default": false
+    },
+    "vetoIdleCompaction": {
+      "type": "boolean",
+      "title": "Veto idle compaction during a wait",
+      "description": "Keeps the full context while background work is pending. Heuristic: see the README.",
       "default": false
     }
   }
