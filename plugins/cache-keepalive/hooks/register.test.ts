@@ -158,3 +158,44 @@ test('a /keepalive that gets no answer leaves the wait running and unspent', asy
   expect(seen.forks).toBe(2)
   expect(seen.logs.at(-1)).toContain('spent 50015 of 2000000')
 })
+
+const cron = { id: 'c1', schedule: '*/30 * * * *', recurring: true, prompt: 'check the build' }
+
+test('a scheduled wake-up alone arms', async ($, on) => {
+  const { seen, clock } = engine(on)
+  await $.classic.Stop({ background_tasks: [], session_crons: [cron] } as never)
+  expect(seen.statuses.at(-1)).toContain('armed, 1 wake-up(s), warm until')
+  await clock.fire(50)
+  expect(seen.forks).toBe(1)
+})
+
+test('a wake-up with no task list at all arms', async ($, on) => {
+  const { seen } = engine(on)
+  await $.classic.Stop({ session_crons: [cron] } as never)
+  expect(seen.statuses.at(-1)).toContain('armed, 1 wake-up(s)')
+})
+
+test('the status counts both kinds of work', async ($, on) => {
+  const { seen } = engine(on)
+  await $.classic.Stop({ background_tasks: [task], session_crons: [cron, cron] } as never)
+  expect(seen.statuses.at(-1)).toContain('armed, 1 task(s), 2 wake-up(s), warm until')
+})
+
+test('a Stop with neither tasks nor wake-ups does not arm', async ($, on) => {
+  const { seen } = engine(on)
+  await $.classic.Stop({ background_tasks: [], session_crons: [] } as never)
+  expect(seen.statuses).toEqual([])
+})
+
+test('the compaction instructions cover tasks and scheduled wake-ups', { options: { compactOnCap: true } }, async ($, on) => {
+  const { clock } = engine(on, 400_000)
+  mock.store(on)
+  on('session.id', () => ({ value: 's-1' }) as never)
+  on('session.cwd', () => ({ value: '/work' }) as never)
+  let instructions: string | undefined
+  on('session.compact', (_, e) => (instructions = e.instructions, { messages: [{ role: 'user', text: 'summary', toolUses: [] }], tokensBefore: 1_000_000, tokensAfter: 100_000 }) as never)
+  await $.classic.Stop({ session_crons: [cron] } as never)
+  await clock.fire(50)
+  expect(instructions).toContain('background tasks')
+  expect(instructions).toContain('scheduled wake-up')
+})

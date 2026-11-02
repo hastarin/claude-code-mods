@@ -5,7 +5,7 @@
   "plugins": [
     {
       "name": "cache-keepalive",
-      "description": "Keeps the prompt cache warm while background tasks run",
+      "description": "Keeps the prompt cache warm while the session waits on background work",
       "version": "0.2.5",
       "author": { "name": "RichardJSun" },
       "source": "./plugins/cache-keepalive"

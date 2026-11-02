@@ -93,7 +93,7 @@ async function compact($: Engine) {
   compacting = true
   try {
     const startedAt = new Date(await $.clock.now()).toISOString()
-    const r = await $.session.compact({ instructions: 'Also keep the background tasks\' IDs, output paths, and what to do when they finish.' })
+    const r = await $.session.compact({ instructions: 'Also keep the background tasks\' IDs, output paths, and what to do when they finish, and what each scheduled wake-up is for.' })
     if (r.skip !== undefined) return `compaction skipped: ${r.skip}`
     $.ui.log(`keepalive: compacted. To reopen the conversation as it was before, in a new session, run: ${await restoreCommand($, startedAt)}`)
 
@@ -175,7 +175,9 @@ export const register: Register = (on, options) => {
 
   // Arm only when background work will wake the session later
   on('classic.Stop', async ($, e, next) => {
-    if (e.background_tasks?.length && !compacting) {
+    const tasks = e.background_tasks?.length ?? 0
+    const crons = e.session_crons?.length ?? 0
+    if ((tasks || crons) && !compacting) {
       const { context: ctx, rateLimits } = await $.session.usage()
       if (inOverage(rateLimits)) {
         $.ui.status('keepalive: off in overage')
@@ -184,7 +186,8 @@ export const register: Register = (on, options) => {
       spent = 0
       budget = WRITE_MULT * (ctx.tokens ?? 0)
       warmUntil = await $.clock.now() + TTL_MS
-      $.ui.status(`keepalive: armed, ${e.background_tasks.length} task(s), warm ${until(warmUntil)}`)
+      const work = [tasks && `${tasks} task(s)`, crons && `${crons} wake-up(s)`].filter(Boolean).join(', ')
+      $.ui.status(`keepalive: armed, ${work}, warm ${until(warmUntil)}`)
       arm($)
     }
     return next(e)

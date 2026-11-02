@@ -10,7 +10,7 @@ Claude Code mods, published as a plugin marketplace.
 
 ## cache-keepalive
 
-When Claude ends a turn while background tasks are still running, the prompt cache can expire before the task's notification arrives. The next request then re-writes the whole context into the cache at 2× the input price.
+When Claude ends a turn while background tasks are still running or a wake-up is scheduled (`ScheduleWakeup`, `/loop`), the prompt cache can expire before the session wakes. The next request then re-writes the whole context into the cache at 2× the input price.
 
 This mod pings the cache with a one-line fork of the conversation every 50 minutes while the session waits. A cache read costs 0.025–0.1× input, so a ping costs a few percent of a re-write. Pings stop when:
 
@@ -23,7 +23,7 @@ This mod pings the cache with a one-line fork of the conversation every 50 minut
 
 ### Limitations
 
-The mod assumes the 1h cache TTL. It cannot read the TTL, so it infers the 5m TTL from overage, which switches a session to it. It does not arm while the 5-hour or 7-day rate-limit window is at 100% or more, and it stops if one crosses 100% during the wait. Mods cannot see model-scoped limits such as Fable's weekly one, so the mod ignores them. When such a limit runs out, the first ping misses and the mod stops. Rate-limit readings arrive with this session's own responses, so the mod may not see overage that other sessions cause during a wait. When a 5m TTL slips past the check, the first ping misses, pays for a full re-cache itself and saves nothing, and the mod stops.
+A task or wake-up further ahead than the budget lasts (about 17 hours, or 33 on Opus 5.5 and 67 on Fable) still arms the mod, so the session pays for the pings and then the re-write. A task that never wakes the session spends the whole budget for nothing. The mod assumes the 1h cache TTL. It cannot read the TTL, so it infers the 5m TTL from overage, which switches a session to it. It does not arm while the 5-hour or 7-day rate-limit window is at 100% or more, and it stops if one crosses 100% during the wait. Mods cannot see model-scoped limits such as Fable's weekly one, so the mod ignores them. When such a limit runs out, the first ping misses and the mod stops. Rate-limit readings arrive with this session's own responses, so the mod may not see overage that other sessions cause during a wait. When a 5m TTL slips past the check, the first ping misses, pays for a full re-cache itself and saves nothing, and the mod stops.
 
 ### Compact on cap
 
