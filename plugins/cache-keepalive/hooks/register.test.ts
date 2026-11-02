@@ -86,13 +86,6 @@ test('a ping in flight when the session ends does not rearm or report', async ($
   expect(seen.statuses.at(-1)).toBe(undefined)
 })
 
-test('a timer on schedule pings', async ($, on) => {
-  const { seen, clock } = engine(on)
-  await $.classic.Stop({ background_tasks: [task] } as never)
-  await clock.fire(50)
-  expect(seen.forks).toBe(1)
-})
-
 const keepalive = ($: Engine, args = '') => $.command.run({ command: 'keepalive', args } as never)
 
 test('/keepalive refuses and names the cost when no wait is armed', async ($, on) => {
@@ -130,6 +123,7 @@ test('/keepalive force pings a cold cache and leaves any wait alone', async ($, 
   const { text } = await keepalive($, ' force ')
   expect(seen.forks).toBe(1)
   expect(text).toContain('MISS: cache read 0/')
+  expect(text).toMatch(/, cost \d+ token-equivalents$/)
   expect(seen.statuses).toEqual([])
 })
 
@@ -139,6 +133,7 @@ test('/keepalive on a warm wait reports the hit and leaves the wait alone', asyn
   clock.advance(40)
   const { text } = await keepalive($)
   expect(text).toContain('HIT: cache read 1000000/')
+  expect(text).toContain(', cost 50015 token-equivalents; the wait has spent 0 of 2000000 token-equivalents')
   await clock.fire(10)
   expect(seen.forks).toBe(2)
   expect(seen.logs.at(-1)).toContain('spent 50015 of 2000000')
@@ -161,7 +156,7 @@ test('a /keepalive that gets no answer leaves the wait running and unspent', asy
   await $.classic.Stop({ background_tasks: [task] } as never)
   seen.noAnswer = true
   const { text } = await keepalive($)
-  expect(text).toContain('no ping: api-error')
+  expect(text).toBe('MISS: no ping: api-error; the wait has spent 0 of 2000000 token-equivalents')
   seen.noAnswer = false
   await clock.fire(50)
   expect(seen.forks).toBe(2)
@@ -373,6 +368,15 @@ test('a wait stays armed while a ping is in flight, for the veto', vetoOn, async
   expect(compacted.count).toBe(0)
 })
 
+test('passes through once a missed ping has ended the wait', vetoOn, async ($, on) => {
+  const { seen, clock, compacted } = idle(on)
+  await $.classic.Stop({ background_tasks: [task] } as never)
+  seen.isHit = false
+  await clock.fire(50)
+  await compaction($, 'precompute')
+  expect(compacted.count).toBe(1)
+})
+
 test('a wait stays armed while a ping is in flight, for /keepalive', async ($, on) => {
   const { seen, clock } = engine(on)
   let reply: string | undefined
@@ -404,7 +408,7 @@ test('a spent budget ends the wait before compaction begins', { options: { compa
   let reply: string | undefined
   on('session.compact', async () => {
     reply = (await keepalive($)).text
-    return { messages: rows, tokensBefore: 1_000_000, tokensAfter: 100_000 } as never
+    return { messages: [{ role: 'user', text: 'summary', toolUses: [] }], tokensBefore: 1_000_000, tokensAfter: 100_000 } as never
   })
   await $.classic.Stop({ background_tasks: [task] } as never)
   await clock.fire(50)
@@ -412,16 +416,16 @@ test('a spent budget ends the wait before compaction begins', { options: { compa
   expect(reply).toContain('no wait is armed')
 })
 
-test('a missed ping ends the wait', vetoOn, async ($, on) => {
-  const { seen, clock, compacted } = idle(on)
+test('a missed ping ends the wait', async ($, on) => {
+  const { seen, clock } = engine(on)
   await $.classic.Stop({ background_tasks: [task] } as never)
   seen.isHit = false
   await clock.fire(50)
   expect(seen.statuses.at(-1)).toBe('keepalive: missed, stopped')
-  await compaction($, 'precompute')
-  expect(compacted.count).toBe(1)
+  const { text } = await keepalive($)
+  expect(seen.forks).toBe(1)
+  expect(text).toContain('no wait is armed')
 })
-
 
 // Compacts on the first ping, from the given folder, and returns the logged lines naming a restore command
 async function restoreLines($: Engine, on: On, cwd: string) {

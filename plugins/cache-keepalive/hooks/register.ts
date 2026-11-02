@@ -228,8 +228,9 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  // Idle compaction builds its summary in the background as `precompute`, and the next prompt installs it as `auto`
-  // once the turn has begun, too late to veto. Both triggers also serve context-full compaction, so this tells them
+  // Idle compaction runs between turns. An interactive terminal compacts at once as `auto`. Elsewhere it builds its
+  // summary in the background as `precompute`, and the next prompt installs it as `auto` once the turn has begun,
+  // too late to veto. Both triggers also serve context-full compaction, so this tells them
   // apart by circumstance. A wrong veto mid-turn would end in prompt too long, so anything but the idle case goes
   // ahead, a subagent's own transcript included: the fill read here is the main conversation's, not its.
   on('session.compact', { trigger: ['auto', 'precompute'] }, async ($, e, next) => {
@@ -252,7 +253,10 @@ export const register: Register = (on, options) => {
   // A manual ping leaves the wait alone: its timer already fires inside the TTL.
   on('command.run', { command: 'keepalive' }, async ($, e) => {
     if (e.args.trim() !== 'force' && !(armed && await $.clock.now() < warmUntil)) return { text: await refusal($) }
-    const { ok, line } = await ping($)
-    return { text: `${ok ? 'HIT' : 'MISS'}: ${line}` }
+    const { ok, paid, line } = await ping($)
+    // The ping is not counted against the wait, so the reply gives its cost and the wait's spend apart
+    const cost = paid ? `, cost ${Math.round(paid)} token-equivalents` : ''
+    const wait = armed ? `; the wait has ${ledger()}` : ''
+    return { text: `${ok ? 'HIT' : 'MISS'}: ${line}${cost}${wait}` }
   })
 }

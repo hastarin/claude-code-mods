@@ -19,7 +19,7 @@ This mod pings the cache with a one-line fork of the conversation every 50 minut
 - a ping misses the cache
 - the pings have cost as much as one re-write would have
 
-`/keepalive` pings now and reports the hit rate. It refuses when no wait is armed or the cache has expired, because a miss there re-writes the whole context. `/keepalive force` pings anyway. A manual ping leaves any wait as it is. The status line shows `armed`, `warm` or `stopped`. `armed` and `warm` end with the time the cache expires if no ping lands, so a line still on screen after that time is stale.
+`/keepalive` pings now and reports the hit rate, what the ping cost, and while a wait is armed, what the wait has spent. It refuses when no wait is armed or the cache has expired, because a miss there re-writes the whole context. `/keepalive force` pings anyway. A manual ping leaves any wait as it is. The status line shows `armed`, `warm` or `stopped`. `armed` and `warm` end with the time the cache expires if no ping lands, so a line still on screen after that time is stale.
 
 ### Limitations
 
@@ -27,7 +27,7 @@ A task or wake-up further ahead than the budget lasts (about 17 hours, or 33 on 
 
 ### Veto idle compaction
 
-The built-in idle compaction can replace the context that the pings are keeping warm. About 54 minutes after the last main-thread request it summarizes a context of at least 200k tokens in the background, and the next prompt installs that summary, however warm the cache is. The `vetoIdleCompaction` setting (off by default) vetoes it during a wait. The veto shows only in the debug log, as `precomputed compact: skipped`.
+The built-in idle compaction can replace the context that the pings are keeping warm. About 54 minutes after the last main-thread request it compacts a context of at least 200k tokens, however warm the cache is. In an interactive terminal it compacts there and then, and shows "Compacted while idle, before the prompt cache expired". In VS Code it summarizes in the background, and the next prompt installs that summary. The `vetoIdleCompaction` setting (off by default) vetoes it during a wait. In VS Code the veto shows in the debug log as `precomputed compact: skipped`. Claude Code remembers a veto until you next type a prompt, and makes no background summaries until then, so a context-full compaction in that time runs in the foreground while you wait.
 
 This is a heuristic. Idle compaction reaches mods as `precompute` and `auto`, the same triggers as context-full compaction, so the mod cannot identify it and judges by circumstance. It vetoes only when a wait is armed, no main-loop turn is in progress, the compaction is the main conversation's, and the context is known to be under 80% full. Everything else goes ahead, because a wrong veto mid-turn would end in a prompt-too-long error. A context-full compaction that meets all of those conditions, such as one for a prompt submitted while the context is under 80%, would still be vetoed.
 
