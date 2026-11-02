@@ -25,6 +25,12 @@ This mod pings the cache with a one-line fork of the conversation every 50 minut
 
 A task or wake-up further ahead than the budget lasts (about 17 hours, or 33 on Opus 5.5 and 67 on Fable) still arms the mod, so the session pays for the pings and then the re-write. A task that never wakes the session spends the whole budget for nothing. The mod assumes the 1h cache TTL. It cannot read the TTL, so it infers the 5m TTL from overage, which switches a session to it. It does not arm while the 5-hour or 7-day rate-limit window is at 100% or more, and it stops if one crosses 100% during the wait. Mods cannot see model-scoped limits such as Fable's weekly one, so the mod ignores them. When such a limit runs out, the first ping misses and the mod stops. Rate-limit readings arrive with this session's own responses, so the mod may not see overage that other sessions cause during a wait. When a 5m TTL slips past the check, the first ping misses, pays for a full re-cache itself and saves nothing, and the mod stops.
 
+### Veto idle compaction
+
+The built-in idle compaction can replace the context that the pings are keeping warm. About 54 minutes after the last main-thread request it summarizes a context of at least 200k tokens in the background, and the next prompt installs that summary, however warm the cache is. The `vetoIdleCompaction` setting (off by default) vetoes it during a wait. The veto shows only in the debug log, as `precomputed compact: skipped`.
+
+This is a heuristic. Idle compaction reaches mods as `precompute` and `auto`, the same triggers as context-full compaction, so the mod cannot identify it and judges by circumstance. It vetoes only when a wait is armed, no main-loop turn is in progress, the compaction is the main conversation's, and the context is known to be under 80% full. Everything else goes ahead, because a wrong veto mid-turn would end in a prompt-too-long error. A context-full compaction that meets all of those conditions, such as one for a prompt submitted while the context is under 80%, would still be vetoed.
+
 ### Compact on cap
 
 The `compactOnCap` setting (off by default) compacts the conversation when the ping budget runs out, while the cache is still warm. It compacts only when the compaction's cost plus re-caching the summary is less than re-caching the whole context. The mod records the cost and summary size of each compaction it runs and uses them for the next decision. Compaction loses context detail, which is why it is off by default.
