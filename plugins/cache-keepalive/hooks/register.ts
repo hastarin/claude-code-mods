@@ -8,6 +8,8 @@ const PING_EVERY_MS = 50 * 60_000
 const TTL_MS = 60 * 60_000
 const WRITE_MULT = 2
 const OUTPUT_MULT = 5
+// Above this fill an auto compaction is more likely context pressure than idleness, so it goes ahead
+const VETO_BELOW_PERCENT = 80
 
 // Compaction cost per context token and summary size over context, used until a compaction is measured
 const COMPACT_COST_GUESS = 0.6
@@ -18,7 +20,9 @@ let timer: { cancel(): void } | undefined
 let armed = false
 let generation = 0
 let compactOnCap = false
+let vetoIdle = false
 let compacting = false
+let inTurn = false
 let spent = 0
 let budget = 0
 let context = 0
@@ -177,6 +181,7 @@ function arm($: Engine) {
 
 export const register: Register = (on, options) => {
   compactOnCap = options.compactOnCap === true
+  vetoIdle = options.vetoIdleCompaction === true
 
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'keepalive', description: 'Ping the prompt cache now and report the hit rate', argumentHint: '[force]' })
@@ -192,8 +197,14 @@ export const register: Register = (on, options) => {
 
   on('turn.start', async ($, e, next) => {
     if (e.agentId !== undefined) return next(e)
+    inTurn = true
     stop()
     if (!compacting) $.ui.status(undefined)
+    return next(e)
+  })
+
+  on('turn.complete', async ($, e, next) => {
+    if (e.agentId === undefined) inTurn = false
     return next(e)
   })
 
@@ -215,6 +226,18 @@ export const register: Register = (on, options) => {
       arm($)
     }
     return next(e)
+  })
+
+  // Idle compaction runs between turns. An interactive terminal compacts at once as `auto`. Elsewhere it builds its
+  // summary in the background as `precompute`, and the next prompt installs it as `auto` once the turn has begun,
+  // too late to veto. Both triggers also serve context-full compaction, so this tells them
+  // apart by circumstance. A wrong veto mid-turn would end in prompt too long, so anything but the idle case goes
+  // ahead, a subagent's own transcript included: the fill read here is the main conversation's, not its.
+  on('session.compact', { trigger: ['auto', 'precompute'] }, async ($, e, next) => {
+    if (!vetoIdle || e.agentId !== undefined || !armed || inTurn) return next(e)
+    const { context: ctx } = await $.session.usage()
+    if ((ctx.percent ?? 100) >= VETO_BELOW_PERCENT) return next(e)
+    return { skip: 'keepalive: background work pending, keeping full context' }
   })
 
   // Other sessions can push the account into overage during the wait
