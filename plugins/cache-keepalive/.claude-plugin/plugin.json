@@ -1,6 +1,6 @@
 {
   "name": "cache-keepalive",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Keeps the prompt cache warm while background tasks run",
   "author": { "name": "RichardJSun" },
   "repository": "https://github.com/RichardJSun/claude-code-mods",
