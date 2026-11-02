@@ -5,10 +5,11 @@ import type { On } from 'claude-code'
 const MIN = 60_000
 const task = { id: 'b1', type: 'shell', status: 'running', description: 'build' }
 
-// Stands in for the engine: a 1M-token context, cache hits on every fork, records statuses and forks.
+// Stands in for the engine: a subscriber's 1M-token context, cache hits on every fork, records statuses and forks.
 // The timer fires only on `fire(at)`, so a test sets the wall time it fires at, as a machine that slept would.
 function engine(on: On, forkOutput = 1) {
-  const seen = { statuses: [] as (string | undefined)[], forks: 0, logs: [] as string[], duringFork: async () => {}, isHit: true, noAnswer: false, percent: 100 as number | undefined }
+  const seen = { statuses: [] as (string | undefined)[], forks: 0, logs: [] as string[], duringFork: async () => {}, isHit: true, noAnswer: false, percent: 100 as number | undefined,
+    rateLimits: [{ kind: 'five_hour', percentUsed: 10 }], env: {} as Record<string, string>, settings: {} as Record<string, unknown> }
   let now = Date.UTC(2026, 9, 7, 12)
   let resolve = () => {}
   on('clock.now', () => ({ value: now }) as never)
@@ -20,7 +21,9 @@ function engine(on: On, forkOutput = 1) {
   on('classic.Stop', () => ({}) as never)
   on('turn.start', (_, e) => ({ turnId: e.turnId }) as never)
   on('turn.complete', () => ({ text: '' }) as never)
-  on('session.usage', () => ({ value: { context: { tokens: 1_000_000, window: 1_000_000, percent: seen.percent }, rateLimits: [] } }) as never)
+  on('session.usage', () => ({ value: { context: { tokens: 1_000_000, window: 1_000_000, percent: seen.percent }, rateLimits: seen.rateLimits } }) as never)
+  on('env.get', (_, e) => ({ value: seen.env[e.name] }) as never)
+  on('settings.read', () => ({ value: seen.settings }) as never)
   on('session.model', () => ({ value: 'claude-opus-5-5' }) as never)
   on('model.fork', async () => {
     seen.forks++
@@ -220,6 +223,57 @@ test('a main-loop turn cancels the wait', async ($, on) => {
   await $.turn.start({ text: 'hi', turnId: 't-1' } as never)
   await clock.fire(50)
   expect(seen.forks).toBe(0)
+})
+
+// The engine's TTL is 5m without a subscription, and these override it in this order
+async function armsWith($: Engine, on: On, set: (seen: ReturnType<typeof engine>['seen']) => void) {
+  const { seen, clock } = engine(on)
+  set(seen)
+  await $.classic.Stop({ background_tasks: [task] } as never)
+  await clock.fire(50)
+  return { forks: seen.forks, status: seen.statuses[0] }
+}
+
+const noSubscription = (seen: ReturnType<typeof engine>['seen']) => { seen.rateLimits = [] }
+
+test('does not arm without a subscription, which caches for 5 minutes', async ($, on) => {
+  expect(await armsWith($, on, noSubscription)).toEqual({ forks: 0, status: 'keepalive: off, 5m cache TTL' })
+})
+
+test('a gateway spend limit is not a subscription', async ($, on) => {
+  expect((await armsWith($, on, seen => { seen.rateLimits = [{ kind: 'spend_limit', percentUsed: 10 }] })).forks).toBe(0)
+})
+
+test('FORCE_PROMPT_CACHING_5M keeps a subscriber off', async ($, on) => {
+  expect((await armsWith($, on, seen => { seen.env.FORCE_PROMPT_CACHING_5M = '1' })).forks).toBe(0)
+})
+
+test('CLAUDE_CODE_PROMPT_CACHE_TTL=5m keeps a subscriber off', async ($, on) => {
+  expect((await armsWith($, on, seen => { seen.env.CLAUDE_CODE_PROMPT_CACHE_TTL = '5m' })).forks).toBe(0)
+})
+
+test('CLAUDE_CODE_PROMPT_CACHE_TTL=1h arms without a subscription', async ($, on) => {
+  expect((await armsWith($, on, seen => { noSubscription(seen); seen.env.CLAUDE_CODE_PROMPT_CACHE_TTL = '1h' })).forks).toBe(1)
+})
+
+test('the promptCacheTtl setting of 5m keeps a subscriber off', async ($, on) => {
+  expect((await armsWith($, on, seen => { seen.settings.promptCacheTtl = '5m' })).forks).toBe(0)
+})
+
+test('the promptCacheTtl setting of 1h arms without a subscription', async ($, on) => {
+  expect((await armsWith($, on, seen => { noSubscription(seen); seen.settings.promptCacheTtl = '1h' })).forks).toBe(1)
+})
+
+test('CLAUDE_CODE_PROMPT_CACHE_TTL wins over the promptCacheTtl setting', async ($, on) => {
+  expect((await armsWith($, on, seen => { seen.settings.promptCacheTtl = '5m'; seen.env.CLAUDE_CODE_PROMPT_CACHE_TTL = '1h' })).forks).toBe(1)
+})
+
+test('ENABLE_PROMPT_CACHING_1H arms without a subscription', async ($, on) => {
+  expect((await armsWith($, on, seen => { noSubscription(seen); seen.env.ENABLE_PROMPT_CACHING_1H = 'true' })).forks).toBe(1)
+})
+
+test('FORCE_PROMPT_CACHING_5M wins over ENABLE_PROMPT_CACHING_1H', async ($, on) => {
+  expect((await armsWith($, on, seen => { seen.env.ENABLE_PROMPT_CACHING_1H = '1'; seen.env.FORCE_PROMPT_CACHING_5M = '1' })).forks).toBe(0)
 })
 
 test('a wait stays armed while a ping is in flight, for /keepalive', async ($, on) => {

@@ -2,8 +2,9 @@ import type { Hook, Register } from 'claude-code'
 
 type Engine = Parameters<Hook<'turn.start'>>[0]
 
-// Assumes the 1h cache TTL. Overage switches to the 5m TTL, so the mod stays off while any
-// rate-limit window is at 100%. A 5m TTL it fails to infer makes the first ping miss and stop the pings.
+// The pings keep only the 1h cache TTL warm, so the mod stays off when it expects the 5m one. Overage switches to
+// the 5m TTL too, so it also stays off while any rate-limit window is at 100%. A 5m TTL it fails to infer makes
+// the first ping miss and stop the pings.
 const PING_EVERY_MS = 50 * 60_000
 const TTL_MS = 60 * 60_000
 const WRITE_MULT = 2
@@ -47,6 +48,22 @@ function stop() {
 // Mods see only the account-wide windows, not model-scoped limits such as Fable's weekly one
 function inOverage(limits: { percentUsed: number }[]) {
   return limits.some(l => l.percentUsed >= 100)
+}
+
+const isOn = (v:string | undefined) => ['1', 'true', 'yes', 'on'].includes((v ?? '').toLowerCase())
+const isTtl = (v: unknown): v is '5m' | '1h' => v === '5m' || v === '1h'
+
+// The TTL the engine picks, by its overrides in its own order, since the API does not report it.
+// Without one a subscription means 1h, and only a subscription has five-hour and seven-day windows.
+// Adapted from usage-bar (hastarin/hast-claude-mods), which follows cache-timer and cache-keeper.
+async function cacheTtl($: Engine, limits: { kind: string }[]) {
+  if (isOn(await $.env.get('FORCE_PROMPT_CACHING_5M'))) return '5m'
+  const env = await $.env.get('CLAUDE_CODE_PROMPT_CACHE_TTL')
+  if (isTtl(env)) return env
+  const setting = await $.settings.read({ key: 'promptCacheTtl' })
+  if (isTtl(setting)) return setting
+  if (isOn(await $.env.get('ENABLE_PROMPT_CACHING_1H'))) return '1h'
+  return limits.some(l => l.kind === 'five_hour' || l.kind === 'seven_day') ? '1h' : '5m'
 }
 
 // Input-token equivalents a call cost, reads priced for the session's model
@@ -205,6 +222,10 @@ export const register: Register = (on, options) => {
       const { context: ctx, rateLimits } = await $.session.usage()
       if (inOverage(rateLimits)) {
         $.ui.status('keepalive: off in overage')
+        return next(e)
+      }
+      if (await cacheTtl($, rateLimits) === '5m') {
+        $.ui.status('keepalive: off, 5m cache TTL')
         return next(e)
       }
       spent = 0
