@@ -1,12 +1,12 @@
 {
   "name": "hastarin-mods",
   "owner": { "name": "RichardJSun" },
-  "metadata": { "description": "Claude Code mods by RichardJSun", "version": "0.3.1" },
+  "metadata": { "description": "Claude Code mods by RichardJSun", "version": "0.3.2" },
   "plugins": [
     {
       "name": "cache-keepalive",
       "description": "Keeps the prompt cache warm while background tasks run",
-      "version": "0.3.1",
+      "version": "0.3.2",
       "author": { "name": "RichardJSun" },
       "source": "./plugins/cache-keepalive"
     },
