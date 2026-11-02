@@ -16,6 +16,8 @@ const COMPACT_COST_GUESS = 0.6
 const SUMMARY_RATIO_GUESS = 0.15
 
 let timer: { cancel(): void } | undefined
+// True for the whole wait, which `timer` is not: it clears when it fires, so it is gone while a ping runs
+let armed = false
 let generation = 0
 let compactOnCap = false
 let vetoIdle = false
@@ -41,6 +43,7 @@ function readMult(model: string) {
 // Bumping the generation also stops a ping already in flight from rearming
 function stop() {
   generation++
+  armed = false
   timer?.cancel()
   timer = undefined
 }
@@ -132,12 +135,13 @@ async function compact($: Engine) {
 
 async function refusal($: Engine) {
   const { context: ctx } = await $.session.usage()
-  const why = timer ? 'the cache has expired' : 'no wait is armed, so the cache may be cold'
+  const why = armed ? 'the cache has expired' : 'no wait is armed, so the cache may be cold'
   return `Not pinging: ${why}. A miss re-writes the whole context, about ${WRITE_MULT * (ctx.tokens ?? 0)} token-equivalents. Use /keepalive force to ping anyway.`
 }
 
 function arm($: Engine) {
   stop()
+  armed = true
   const armedAt = generation
   timer = $.clock.after(PING_EVERY_MS, async () => {
     timer = undefined
@@ -158,6 +162,7 @@ function arm($: Engine) {
         return arm($)
       }
 
+      armed = false
       if (!compactOnCap || !(await compactPays($))) return $.ui.status(`keepalive: budget spent, stopped, warm ${until(warmUntil)}`)
       $.ui.status('keepalive: compacting')
       const result = await compact($)
@@ -167,6 +172,9 @@ function arm($: Engine) {
       if (generation !== armedAt) return
       $.ui.log(`keepalive: ${err instanceof Error ? err.message : String(err)}`, { to: 'debug' })
       $.ui.status('keepalive: error, stopped')
+    } finally {
+      // A rearm or a stop has moved the generation on and owns `armed` now
+      if (generation === armedAt) armed = false
     }
   })
 }
@@ -226,7 +234,7 @@ export const register: Register = (on, options) => {
   // apart by circumstance. A wrong veto mid-turn would end in prompt too long, so anything but the idle case goes
   // ahead, a subagent's own transcript included: the fill read here is the main conversation's, not its.
   on('session.compact', { trigger: ['auto', 'precompute'] }, async ($, e, next) => {
-    if (!vetoIdle || e.agentId !== undefined || !timer || inTurn) return next(e)
+    if (!vetoIdle || e.agentId !== undefined || !armed || inTurn) return next(e)
     const { context: ctx } = await $.session.usage()
     if ((ctx.percent ?? 100) >= VETO_BELOW_PERCENT) return next(e)
     return { skip: 'keepalive: background work pending, keeping full context' }
@@ -234,7 +242,7 @@ export const register: Register = (on, options) => {
 
   // Other sessions can push the account into overage during the wait
   on('session.measure', async ($, e, next) => {
-    if (timer && e.changed.includes('rateLimits') && inOverage(e.rateLimits)) {
+    if (armed && e.changed.includes('rateLimits') && inOverage(e.rateLimits)) {
       stop()
       $.ui.status('keepalive: overage, stopped')
     }
@@ -244,11 +252,11 @@ export const register: Register = (on, options) => {
   // A stopped wait's warmUntil is no evidence the cache is warm, so being armed is what counts, not the time alone.
   // A manual ping leaves the wait alone: its timer already fires inside the TTL.
   on('command.run', { command: 'keepalive' }, async ($, e) => {
-    if (e.args.trim() !== 'force' && !(timer && await $.clock.now() < warmUntil)) return { text: await refusal($) }
+    if (e.args.trim() !== 'force' && !(armed && await $.clock.now() < warmUntil)) return { text: await refusal($) }
     const { ok, paid, line } = await ping($)
     // The ping is not counted against the wait, so the reply gives its cost and the wait's spend apart
     const cost = paid ? `, cost ${Math.round(paid)} token-equivalents` : ''
-    const wait = timer ? `; the wait has ${ledger()}` : ''
+    const wait = armed ? `; the wait has ${ledger()}` : ''
     return { text: `${ok ? 'HIT' : 'MISS'}: ${line}${cost}${wait}` }
   })
 }
