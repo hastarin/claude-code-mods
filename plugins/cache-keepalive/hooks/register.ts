@@ -6,8 +6,6 @@ type Engine = Parameters<Hook<'turn.start'>>[0]
 // rate-limit window is at 100%. A 5m TTL it fails to infer makes the first ping miss and stop the pings.
 const PING_EVERY_MS = 50 * 60_000
 const TTL_MS = 60 * 60_000
-// A ping fired this close to expiry can land after it, once latency counts, and pay a full re-write
-const TTL_MARGIN_MS = 3 * 60_000
 const WRITE_MULT = 2
 const OUTPUT_MULT = 5
 // Above this fill an auto compaction is more likely context pressure than idleness, so it goes ahead
@@ -20,8 +18,6 @@ const SUMMARY_RATIO_GUESS = 0.15
 let timer: { cancel(): void } | undefined
 let generation = 0
 let compactOnCap = false
-let maxWaitMs = 0
-let excludedTypes: string[] = []
 let vetoIdle = false
 let compacting = false
 let inTurn = false
@@ -29,7 +25,6 @@ let spent = 0
 let budget = 0
 let context = 0
 let warmUntil = 0
-let waitStart = 0
 
 // The status names the expiry so a line left on screen past it reads as stale
 function until(ms: number) {
@@ -137,7 +132,7 @@ async function compact($: Engine) {
 
 async function refusal($: Engine) {
   const { context: ctx } = await $.session.usage()
-  const why = timer ? `the cache is near expiry (${until(warmUntil)})` : 'no wait is armed, so the cache may be cold'
+  const why = timer ? 'the cache has expired' : 'no wait is armed, so the cache may be cold'
   return `Not pinging: ${why}. A miss re-writes the whole context, about ${WRITE_MULT * (ctx.tokens ?? 0)} token-equivalents. Use /keepalive force to ping anyway.`
 }
 
@@ -150,8 +145,7 @@ function arm($: Engine) {
       // A timer that fires late (the machine slept) finds the cache gone, and a ping would only re-write it
       const now = await $.clock.now()
       if (generation !== armedAt) return
-      if (now >= warmUntil - TTL_MARGIN_MS) return $.ui.status('keepalive: expired, stopped')
-      if (now - waitStart > maxWaitMs) return $.ui.status('keepalive: max wait reached')
+      if (now >= warmUntil) return $.ui.status('keepalive: expired, stopped')
 
       const { ok, paid, line } = await ping($)
       if (generation !== armedAt) return
@@ -179,8 +173,6 @@ function arm($: Engine) {
 
 export const register: Register = (on, options) => {
   compactOnCap = options.compactOnCap === true
-  maxWaitMs = Number(options.maxWaitHours) * 60 * 60_000
-  excludedTypes = String(options.excludeTaskTypes).split(',').map(t => t.trim())
   vetoIdle = options.vetoIdleCompaction === true
 
   on('session.start', async ($, e, next) => {
@@ -212,9 +204,9 @@ export const register: Register = (on, options) => {
 
   // Arm only when background work will wake the session later
   on('classic.Stop', async ($, e, next) => {
-    const tasks = (e.background_tasks ?? []).filter(t => !excludedTypes.includes(t.type))
+    const tasks = e.background_tasks?.length ?? 0
     const crons = e.session_crons?.length ?? 0
-    if ((tasks.length || crons) && !compacting) {
+    if ((tasks || crons) && !compacting) {
       const { context: ctx, rateLimits } = await $.session.usage()
       if (inOverage(rateLimits)) {
         $.ui.status('keepalive: off in overage')
@@ -222,9 +214,8 @@ export const register: Register = (on, options) => {
       }
       spent = 0
       budget = WRITE_MULT * (ctx.tokens ?? 0)
-      waitStart = await $.clock.now()
-      warmUntil = waitStart + TTL_MS
-      const work = [tasks.length && `${tasks.length} task(s)`, crons && `${crons} wake-up(s)`].filter(Boolean).join(', ')
+      warmUntil = await $.clock.now() + TTL_MS
+      const work = [tasks && `${tasks} task(s)`, crons && `${crons} wake-up(s)`].filter(Boolean).join(', ')
       $.ui.status(`keepalive: armed, ${work}, warm ${until(warmUntil)}`)
       arm($)
     }
@@ -250,25 +241,11 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  // Only a hit on an armed wait moves the wait: it pays for the warmth it buys and restarts the timer from now.
   // A stopped wait's warmUntil is no evidence the cache is warm, so being armed is what counts, not the time alone.
+  // A manual ping leaves the wait alone: its timer already fires inside the TTL.
   on('command.run', { command: 'keepalive' }, async ($, e) => {
-    const now = await $.clock.now()
-    if (e.args.trim() !== 'force' && !(timer && now < warmUntil - TTL_MARGIN_MS)) return { text: await refusal($) }
-
-    const armedAt = timer ? generation : undefined
-    const { ok, paid, line } = await ping($)
-    const text = `${ok ? 'HIT' : 'MISS'}: ${line}`
-    if (generation !== armedAt) return { text: `${text}, not counted against a wait` }
-    if (ok) {
-      spent += paid
-      warmUntil = now + TTL_MS
-      $.ui.status(`keepalive: warm ${until(warmUntil)}`)
-      arm($)
-    } else if (paid) {
-      stop()
-      $.ui.status('keepalive: missed, stopped')
-    }
-    return { text: `${text}, ${ledger()}` }
+    if (e.args.trim() !== 'force' && !(timer && await $.clock.now() < warmUntil)) return { text: await refusal($) }
+    const { ok, line } = await ping($)
+    return { text: `${ok ? 'HIT' : 'MISS'}: ${line}` }
   })
 }

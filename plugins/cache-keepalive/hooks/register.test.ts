@@ -4,7 +4,6 @@ import type { On } from 'claude-code'
 
 const MIN = 60_000
 const task = { id: 'b1', type: 'shell', status: 'running', description: 'build' }
-const monitor = { id: 'm1', type: 'monitor', status: 'running', description: 'watch logs' }
 
 // Stands in for the engine: a 1M-token context, cache hits on every fork, records statuses and forks.
 // The timer fires only on `fire(at)`, so a test sets the wall time it fires at, as a machine that slept would.
@@ -66,49 +65,6 @@ test('compacting on cap logs a command that restores the pre-compaction conversa
   expect(restore).toContain('/projects/*/s-1.jsonl | head -1)"')
 })
 
-test('a never-ending task stops at the max wait', async ($, on) => {
-  const { seen, clock } = engine(on)
-  await $.classic.Stop({ background_tasks: [task] } as never)
-  for (let i = 0; i < 7; i++) await clock.fire(50)
-  expect(seen.forks).toBe(7)
-  await clock.fire(50)
-  expect(seen.forks).toBe(7)
-  expect(seen.statuses.at(-1)).toBe('keepalive: max wait reached')
-})
-
-test('maxWaitHours sets the cap', { options: { maxWaitHours: 1 } }, async ($, on) => {
-  const { seen, clock } = engine(on)
-  await $.classic.Stop({ background_tasks: [task] } as never)
-  await clock.fire(50)
-  await clock.fire(50)
-  expect(seen.forks).toBe(1)
-  expect(seen.statuses.at(-1)).toBe('keepalive: max wait reached')
-})
-
-test('a monitor alone does not arm', async ($, on) => {
-  const { seen, clock } = engine(on)
-  await $.classic.Stop({ background_tasks: [monitor] } as never)
-  await clock.fire(50)
-  expect(seen.forks).toBe(0)
-  expect(seen.statuses).toEqual([])
-})
-
-test('a monitor beside a shell task arms and counts only the shell', async ($, on) => {
-  const { seen, clock } = engine(on)
-  await $.classic.Stop({ background_tasks: [monitor, task] } as never)
-  expect(seen.statuses.at(-1)).toContain('armed, 1 task(s)')
-  await clock.fire(50)
-  expect(seen.forks).toBe(1)
-})
-
-test('excludeTaskTypes takes a spaced list and replaces the default', { options: { excludeTaskTypes: ' shell , workflow ' } }, async ($, on) => {
-  const { seen } = engine(on)
-  await $.classic.Stop({ background_tasks: [task] } as never)
-  expect(seen.statuses).toEqual([])
-  await $.classic.Stop({ background_tasks: [monitor] } as never)
-  expect(seen.statuses.at(-1)).toContain('armed, 1 task(s)')
-})
-
 test('no ping fires after the session ends', async ($, on) => {
   const { seen, clock } = engine(on)
   on('session.end', () => ({ sessionId: 's-1' }) as never)
@@ -141,21 +97,6 @@ test('a ping in flight when the session ends does not rearm or report', async ($
   expect(seen.statuses.at(-1)).toBe(undefined)
 })
 
-test('a timer inside the TTL margin does not ping and says expired', async ($, on) => {
-  const { seen, clock } = engine(on)
-  await $.classic.Stop({ background_tasks: [task] } as never)
-  await clock.fire(57)
-  expect(seen.forks).toBe(0)
-  expect(seen.statuses.at(-1)).toBe('keepalive: expired, stopped')
-})
-
-test('a timer just outside the TTL margin still pings', async ($, on) => {
-  const { seen, clock } = engine(on)
-  await $.classic.Stop({ background_tasks: [task] } as never)
-  await clock.fire(56)
-  expect(seen.forks).toBe(1)
-})
-
 test('a timer on schedule pings', async ($, on) => {
   const { seen, clock } = engine(on)
   await $.classic.Stop({ background_tasks: [task] } as never)
@@ -174,13 +115,13 @@ test('/keepalive refuses and names the cost when no wait is armed', async ($, on
   expect(text).toContain('/keepalive force')
 })
 
-test('/keepalive refuses past the margin of an armed wait', async ($, on) => {
+test('/keepalive refuses once an armed wait has expired', async ($, on) => {
   const { seen, clock } = engine(on)
   await $.classic.Stop({ background_tasks: [task] } as never)
-  clock.advance(57)
+  clock.advance(60)
   const { text } = await keepalive($)
   expect(seen.forks).toBe(0)
-  expect(text).toContain('near expiry')
+  expect(text).toContain('has expired')
   expect(text).toContain('/keepalive force')
 })
 
@@ -200,46 +141,30 @@ test('/keepalive force pings a cold cache and leaves any wait alone', async ($, 
   const { text } = await keepalive($, ' force ')
   expect(seen.forks).toBe(1)
   expect(text).toContain('MISS: cache read 0/')
-  expect(text).toContain('not counted')
   expect(seen.statuses).toEqual([])
 })
 
-test('/keepalive on a warm wait extends it and counts against its budget', async ($, on) => {
+test('/keepalive on a warm wait reports the hit and leaves the wait alone', async ($, on) => {
   const { seen, clock } = engine(on)
   await $.classic.Stop({ background_tasks: [task] } as never)
   clock.advance(40)
   const { text } = await keepalive($)
-  expect(seen.forks).toBe(1)
   expect(text).toContain('HIT: cache read 1000000/')
-  expect(text).toContain('spent 50015 of 2000000')
-  expect(seen.statuses.at(-1)).toMatch(/^keepalive: warm until/)
-  // 90 min from arming is past the original expiry, so this ping needs the extension and the new timer
-  await clock.fire(50)
+  await clock.fire(10)
   expect(seen.forks).toBe(2)
-  expect(seen.logs.at(-1)).toContain('spent 100030 of 2000000')
+  expect(seen.logs.at(-1)).toContain('spent 50015 of 2000000')
 })
 
-test('/keepalive force past the margin extends the wait on a hit', async ($, on) => {
-  const { seen, clock } = engine(on)
-  await $.classic.Stop({ background_tasks: [task] } as never)
-  clock.advance(58)
-  const { text } = await keepalive($, 'force')
-  expect(text).toContain('spent 50015 of')
-  await clock.fire(50)
-  expect(seen.forks).toBe(2)
-})
-
-test('a /keepalive miss spends none of the wait and stops it', async ($, on) => {
+test('a /keepalive miss leaves the wait running', async ($, on) => {
   const { seen, clock } = engine(on)
   await $.classic.Stop({ background_tasks: [task] } as never)
   clock.advance(40)
   seen.isHit = false
-  const { text } = await keepalive($)
-  expect(text).toContain('MISS')
-  expect(text).toContain('spent 0 of 2000000')
-  expect(seen.statuses.at(-1)).toBe('keepalive: missed, stopped')
-  await clock.fire(50)
-  expect(seen.forks).toBe(1)
+  expect((await keepalive($)).text).toContain('MISS')
+  seen.isHit = true
+  await clock.fire(10)
+  expect(seen.forks).toBe(2)
+  expect(seen.statuses.at(-1)).toMatch(/^keepalive: warm until/)
 })
 
 test('a /keepalive that gets no answer leaves the wait running and unspent', async ($, on) => {
@@ -270,10 +195,8 @@ test('a wake-up with no task list at all arms', async ($, on) => {
   expect(seen.statuses.at(-1)).toContain('armed, 1 wake-up(s)')
 })
 
-test('a wake-up beside an excluded monitor arms and the status counts both kinds of work', async ($, on) => {
+test('the status counts both kinds of work', async ($, on) => {
   const { seen } = engine(on)
-  await $.classic.Stop({ background_tasks: [monitor], session_crons: [cron] } as never)
-  expect(seen.statuses.at(-1)).toContain('armed, 1 wake-up(s)')
   await $.classic.Stop({ background_tasks: [task], session_crons: [cron, cron] } as never)
   expect(seen.statuses.at(-1)).toContain('armed, 1 task(s), 2 wake-up(s), warm until')
 })
@@ -412,7 +335,7 @@ test('passes through when no wait is armed', vetoOn, async ($, on) => {
 test('passes through once the wait has ended', vetoOn, async ($, on) => {
   const { clock, compacted } = idle(on)
   await $.classic.Stop({ background_tasks: [task] } as never)
-  await clock.fire(57)
+  await clock.fire(60)
   await compaction($, 'auto')
   expect(compacted.count).toBe(1)
 })
