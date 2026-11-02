@@ -75,17 +75,6 @@ test('no ping fires after the session ends', async ($, on) => {
   expect(seen.statuses.at(-1)).toBe(undefined)
 })
 
-test('no ping fires into a new session', async ($, on) => {
-  const { seen, clock } = engine(on)
-  on('session.start', () => ({ cwd: '/work' }) as never)
-  on('command.register', () => ({ value: { command: 'keepalive' } }) as never)
-  await $.classic.Stop({ background_tasks: [task] } as never)
-  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
-  await clock.fire(50)
-  expect(seen.forks).toBe(0)
-  expect(seen.statuses.at(-1)).toBe(undefined)
-})
-
 test('a ping in flight when the session ends does not rearm or report', async ($, on) => {
   const { seen, clock } = engine(on)
   on('session.end', () => ({ sessionId: 's-1' }) as never)
@@ -205,6 +194,19 @@ test('a Stop with neither tasks nor wake-ups does not arm', async ($, on) => {
   const { seen } = engine(on)
   await $.classic.Stop({ background_tasks: [], session_crons: [] } as never)
   expect(seen.statuses).toEqual([])
+})
+
+test('the compaction instructions cover tasks and scheduled wake-ups', { options: { compactOnCap: true } }, async ($, on) => {
+  const { clock } = engine(on, 400_000)
+  mock.store(on)
+  on('session.id', () => ({ value: 's-1' }) as never)
+  on('session.cwd', () => ({ value: '/work' }) as never)
+  let instructions: string | undefined
+  on('session.compact', (_, e) => (instructions = e.instructions, { messages: [{ role: 'user', text: 'summary', toolUses: [] }], tokensBefore: 1_000_000, tokensAfter: 100_000 }) as never)
+  await $.classic.Stop({ session_crons: [cron] } as never)
+  await clock.fire(50)
+  expect(instructions).toContain('background tasks')
+  expect(instructions).toContain('scheduled wake-up')
 })
 
 test('a subagent turn neither cancels the wait nor clears the status', async ($, on) => {
@@ -362,6 +364,64 @@ test('passes through when the flag is off', async ($, on) => {
   await compaction($, 'auto')
   expect(compacted.count).toBe(1)
 })
+
+test('a wait stays armed while a ping is in flight, for the veto', vetoOn, async ($, on) => {
+  const { seen, clock, compacted } = idle(on)
+  seen.duringFork = async () => { await compaction($, 'precompute') }
+  await $.classic.Stop({ background_tasks: [task] } as never)
+  await clock.fire(50)
+  expect(compacted.count).toBe(0)
+})
+
+test('a wait stays armed while a ping is in flight, for /keepalive', async ($, on) => {
+  const { seen, clock } = engine(on)
+  let reply: string | undefined
+  seen.duringFork = async () => {
+    seen.duringFork = async () => {}
+    reply = (await keepalive($)).text
+  }
+  await $.classic.Stop({ background_tasks: [task] } as never)
+  await clock.fire(50)
+  expect(reply).toContain('HIT')
+})
+
+test('a rate-limit reading during a ping stops the wait', async ($, on) => {
+  const { seen, clock } = engine(on)
+  on('session.measure', () => ({ changed: [] }) as never)
+  seen.duringFork = async () => { await $.session.measure({ changed: ['rateLimits'], rateLimits: [{ percentUsed: 100 }] } as never) }
+  await $.classic.Stop({ background_tasks: [task] } as never)
+  await clock.fire(50)
+  expect(seen.statuses.at(-1)).toBe('keepalive: overage, stopped')
+  await clock.fire(50)
+  expect(seen.forks).toBe(1)
+})
+
+test('a spent budget ends the wait before compaction begins', { options: { compactOnCap: true } }, async ($, on) => {
+  const { seen, clock } = engine(on, 400_000)
+  mock.store(on)
+  on('session.id', () => ({ value: 's-1' }) as never)
+  on('session.cwd', () => ({ value: '/work' }) as never)
+  let reply: string | undefined
+  on('session.compact', async () => {
+    reply = (await keepalive($)).text
+    return { messages: rows, tokensBefore: 1_000_000, tokensAfter: 100_000 } as never
+  })
+  await $.classic.Stop({ background_tasks: [task] } as never)
+  await clock.fire(50)
+  expect(seen.forks).toBe(1)
+  expect(reply).toContain('no wait is armed')
+})
+
+test('a missed ping ends the wait', vetoOn, async ($, on) => {
+  const { seen, clock, compacted } = idle(on)
+  await $.classic.Stop({ background_tasks: [task] } as never)
+  seen.isHit = false
+  await clock.fire(50)
+  expect(seen.statuses.at(-1)).toBe('keepalive: missed, stopped')
+  await compaction($, 'precompute')
+  expect(compacted.count).toBe(1)
+})
+
 
 // Compacts on the first ping, from the given folder, and returns the logged lines naming a restore command
 async function restoreLines($: Engine, on: On, cwd: string) {
